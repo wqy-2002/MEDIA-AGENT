@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>小红书发布页 Mock（publish-page SPA + closed shadow Host）</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; display: flex; min-height: 100vh; }
+    nav { width: 120px; background: #fafafa; padding: 16px; border-right: 1px solid #eee; }
+    main { flex: 1; padding: 24px; }
+    .publish-page { min-height: 400px; }
+    .creator-tab { display: inline-block; padding: 8px 16px; margin-right: 8px; cursor: pointer; }
+    .upload-content { margin-top: 16px; border: 1px dashed #ccc; padding: 24px; }
+    .img-preview-area .pr { width: 80px; height: 80px; background: #eee; display: inline-block; margin: 4px; }
+    .publish-page-publish-btn { margin-top: 24px; }
+    xhs-publish-btn { display: inline-block; padding: 10px 40px; background: #ff2442; color: #fff; cursor: pointer; margin-right: 8px; }
+    #creator-editor-topic-container .item { padding: 8px; background: #f5f5f5; margin: 4px 0; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <nav><div role="button">发布笔记</div></nav>
+  <main>
+    <div class="publish-page" id="publish-page">
+      <div class="creator-tab">上传视频</div>
+      <div class="creator-tab" id="image-tab">上传图文</div>
+      <div class="upload-content" id="upload-panel" style="display:none">
+        <button id="btn-upload-image">上传图片</button>
+        <button id="btn-text-image">文字配图</button>
+        <input type="file" class="upload-input" style="display:none" />
+      </div>
+      <div id="editor-panel" style="display:none">
+        <div id="stage-label"></div>
+        <div class="img-preview-area" id="preview-area" style="display:none"><div class="pr"></div></div>
+        <div class="title-container" id="title-wrap" style="display:none">
+          <div class="d-input"><input placeholder="填写标题会有更多赞哦" /></div>
+        </div>
+        <div class="edit-container" id="body-wrap" style="display:none">
+          <div class="ql-editor" contenteditable="true" data-placeholder="输入正文描述"></div>
+        </div>
+        <div class="tiptap ProseMirror" id="draft-editor" role="textbox" contenteditable="true" style="display:none"></div>
+        <button id="btn-generate" style="display:none">生成图片</button>
+        <button id="btn-next" style="display:none">下一步</button>
+        <div class="publish-page-publish-btn" id="btn-bar" style="display:none">
+          <xhs-publish-btn id="draft-save-btn" is-publish="false" submit-disabled="false">暂存</xhs-publish-btn>
+          <xhs-publish-btn id="publish-btn" is-publish="true" submit-disabled="false">发布</xhs-publish-btn>
+        </div>
+      </div>
+      <div id="result"></div>
+    </div>
+  </main>
+  <script>
+    const panel = document.getElementById('editor-panel');
+    const label = document.getElementById('stage-label');
+    const btnBar = document.getElementById('btn-bar');
+    document.getElementById('image-tab').onclick = () => {
+      document.getElementById('upload-panel').style.display = 'block';
+    };
+    document.getElementById('btn-text-image').onclick = () => {
+      panel.style.display = 'block';
+      label.textContent = '写文字 生成图片';
+      document.getElementById('draft-editor').style.display = 'block';
+      document.getElementById('btn-generate').style.display = 'inline-block';
+      btnBar.style.display = 'block';
+      document.getElementById('publish-btn').style.display = 'none';
+      document.getElementById('draft-save-btn').style.display = 'inline-block';
+    };
+    document.getElementById('btn-upload-image').onclick = () => {
+      panel.style.display = 'block';
+      label.textContent = '';
+      document.getElementById('preview-area').style.display = 'block';
+      document.getElementById('title-wrap').style.display = 'block';
+      document.getElementById('body-wrap').style.display = 'block';
+      btnBar.style.display = 'block';
+      document.getElementById('publish-btn').style.display = 'inline-block';
+      document.getElementById('draft-save-btn').style.display = 'none';
+    };
+    document.getElementById('btn-generate').onclick = () => {
+      label.textContent = '选择一个喜欢的卡片 下一步';
+      document.getElementById('draft-editor').style.display = 'none';
+      document.getElementById('btn-generate').style.display = 'none';
+      document.getElementById('btn-next').style.display = 'inline-block';
+    };
+    document.getElementById('btn-next').onclick = () => {
+      label.textContent = '';
+      document.getElementById('btn-next').style.display = 'none';
+      document.getElementById('title-wrap').style.display = 'block';
+      document.getElementById('body-wrap').style.display = 'block';
+      document.getElementById('publish-btn').style.display = 'inline-block';
+      document.getElementById('draft-save-btn').style.display = 'inline-block';
+    };
+    document.getElementById('publish-btn').onclick = () => {
+      document.getElementById('result').textContent = '发布成功';
+    };
+  </script>
+</body>
+</html>
