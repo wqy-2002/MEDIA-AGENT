@@ -15,6 +15,11 @@ import {
 // 只负责页面读取、填写、点击、上传等 DOM 操作；不调用模型，不直接控制 tab。
 // 接收 Background 下发的 ContentCommand，调用对应平台 Adapter 执行。
 
+/** about:blank 子 frame 不处理消息，避免抢答主 frame（配合 sendToTab frameId:0） */
+function isBlankSubFrame(): boolean {
+  return location.href === 'about:blank' || location.protocol === 'about:';
+}
+
 export default defineContentScript({
   matches: [
     '*://*.xiaohongshu.com/*',
@@ -31,6 +36,9 @@ export default defineContentScript({
         _sender,
         sendResponse: (res: MessageResponse<ActionResult>) => void,
       ) => {
+        // 空白子 frame 不消费消息，让主 frame 响应
+        if (isBlankSubFrame()) return false;
+
         // 就绪探测
         if (message.type === 'PING') {
           sendResponse({ ok: true, data: { success: true } });

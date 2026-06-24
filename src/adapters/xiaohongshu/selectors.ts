@@ -76,12 +76,15 @@ export const xhsSelectors = {
     '[class*="preview"] [class*="img-container"]',
   ],
 
-  // 标题输入。参考实现使用 div.d-input input。
+  // 标题输入。参考实现使用 div.d-input input；勿用裸 input.d-text（会误匹配图片智能标题 overlay）
   titleInput: [
     'div.d-input input',
     '.d-input input',
     'input[placeholder*="标题"]',
+    'input[placeholder*="填写标题"]',
     'input.d-text[placeholder*="标题"]',
+    'input.d-text[placeholder*="填写标题"]',
+    '.title-container input',
     '.title input',
     'textarea[placeholder*="标题"]',
   ],
@@ -93,11 +96,15 @@ export const xhsSelectors = {
     'div[contenteditable="true"][role="textbox"]',
   ],
 
-  // 最终发布表单正文编辑器（参考实现 div.ql-editor，需配合标题框使用）
+  // 最终发布表单正文编辑器（需配合严格 predicate，排除图片编辑 overlay）
   finalBodyEditor: [
     'div.ql-editor',
     '.ql-editor',
+    '.tiptap.ProseMirror',
+    '.ProseMirror[role="textbox"]',
+    'div[contenteditable="true"][role="textbox"]',
     '[data-placeholder*="输入正文描述"]',
+    '.edit-container [contenteditable="true"]',
     '.content-input [contenteditable="true"]',
     '#post-textarea',
     'textarea[placeholder*="正文"]',
@@ -126,6 +133,7 @@ export const xhsSelectors = {
 
   // 新版发布按钮 Host（closed shadow DOM，Content Script 无法 querySelector 内部，仅操作 Host）
   publishButtonNew: [
+    'xhs-publish-btn[is-publish="true"]',
     'xhs-publish-btn',
   ],
 
@@ -147,14 +155,39 @@ export const xhsSelectors = {
     'button.ce-btn.bg-red',
   ],
 
+  // 文本兜底：按「发布 / 立即发布」匹配，需二次过滤排除定时发布等
+  publishButtonTextFallback: [
+    'button',
+    '[role="button"]',
+    '[class*="btn"]',
+    '[class*="button"]',
+    '[class*="publish"]',
+    '[class*="submit"]',
+    '[class*="red"]',
+    'xhs-publish-btn',
+  ],
+
   // 发布按钮（优先文本匹配「发布」，此处作为补充）
   submitButton: [
     '.publish-page-publish-btn button.bg-red',
+    '.publish-page-publish-btn button',
     'button.publishBtn',
     '.submit button',
     'button[class*="publish"]',
     '.el-button--primary',
     '.d-button-content',
+  ],
+
+  // 发布页内部滚动容器（发布按钮常在底部，需滚动这些容器而非仅 window）
+  publishScrollContainers: [
+    '.microapp-container',
+    '.publish-page',
+    '.publish-page-content',
+    "[class*='microapp']",
+    "[class*='publish']",
+    'main',
+    'body',
+    'html',
   ],
 
   // 标题超长提示（出现即表示标题超过平台上限，参考实现据此报错）

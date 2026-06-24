@@ -87,7 +87,7 @@ export function waitForTabComplete(tabId: number, timeout = 30000): Promise<void
 export async function waitForContentReady(tabId: number, retries = 10): Promise<boolean> {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'PING' }, { frameId: 0 });
       if (res) return true;
     } catch {
       // 脚本尚未就绪

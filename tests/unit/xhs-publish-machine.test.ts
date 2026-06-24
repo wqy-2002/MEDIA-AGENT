@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   detectXhsPublishState,
   findXhsPublishButton,
@@ -223,6 +223,20 @@ describe('xhs publish machine', () => {
     expect(document.body.innerText).toContain('发布成功');
   }, 30000);
 
+  it('图片编辑 overlay 智能标题小框不应误判为最终标题', () => {
+    document.body.innerHTML = `
+      <div class="publish-page">
+        <div class="microapp-container">
+          <div>返回 图片编辑2/18 获取封面建议 1 编辑 2 编辑 智能标题</div>
+          <input class="d-text --color-text-title" style="width:4px;height:22px" />
+          <input class="d-text --color-text-title" style="width:4px;height:22px" />
+        </div>
+      </div>
+    `;
+    expect(detectXhsPublishState()).toBe('image_editing');
+    expect(findXhsPublishButton()).toBeNull();
+  });
+
   it('图片编辑中间页不应误判为最终发布表单', () => {
     document.body.innerHTML = `
       <div class="publish-page">
@@ -237,7 +251,75 @@ describe('xhs publish machine', () => {
     expect(detectXhsPublishState()).toBe('image_editing');
   });
 
-  it('图片编辑同屏出现标题和正文时应按最终表单处理', () => {
+  it('图片编辑同屏出现标题和正文且有表单 chrome 时应按最终表单处理', () => {
+    document.body.innerHTML = `
+      <div class="publish-page">
+        <div class="microapp-container">
+          <div>返回 图片编辑1/18 获取封面建议 1 编辑 智能标题</div>
+          <div class="d-input"><input class="d-text" placeholder="填写标题会有更多赞哦" /></div>
+          <div class="tiptap ProseMirror ql-editor" role="textbox" contenteditable="true">正文</div>
+          <button class="contentBtn topic-btn">话题</button>
+          <button class="contentBtn">用户</button>
+          <button class="contentBtn">表情</button>
+        </div>
+      </div>
+    `;
+
+    expect(detectXhsPublishState()).toBe('final_form');
+  });
+
+  it('layout 存在但视口外的标题和正文仍应识别为最终表单', () => {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+    Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: function (this: HTMLElement) {
+        const isEditor = this.matches?.('.tiptap, .ProseMirror, .ql-editor');
+        const isTitle = this instanceof HTMLInputElement;
+        const y = isEditor || isTitle ? 1200 : 120;
+        return {
+          x: 260,
+          y,
+          top: y,
+          left: 260,
+          right: 420,
+          bottom: y + 40,
+          width: 160,
+          height: 40,
+          toJSON: () => ({}),
+        };
+      },
+    });
+    document.body.innerHTML = `
+      <div class="publish-page">
+        <div class="publish-page-content">
+          <div class="d-input"><input class="d-text" placeholder="填写标题会有更多赞哦" /></div>
+          <div class="tiptap ProseMirror ql-editor" role="textbox" contenteditable="true">正文</div>
+          <div class="publish-page-publish-btn">
+            <xhs-publish-btn is-publish="true" submit-disabled="false">发布</xhs-publish-btn>
+          </div>
+        </div>
+      </div>
+    `;
+
+    expect(detectXhsPublishState()).toBe('publish_button_ready');
+  });
+
+  it('仅有表单 chrome 无发布按钮时不应进入 publish_button_ready 终态', () => {
+    document.body.innerHTML = `
+      <div class="publish-page">
+        <div class="d-input"><input class="d-text" placeholder="填写标题会有更多赞哦" /></div>
+        <div class="tiptap ProseMirror ql-editor" role="textbox" contenteditable="true">正文</div>
+        <button class="contentBtn topic-btn">话题</button>
+        <button class="contentBtn">用户</button>
+        <button class="contentBtn">表情</button>
+      </div>
+    `;
+
+    expect(detectXhsPublishState()).toBe('final_form');
+    expect(findXhsPublishButton()).toBeNull();
+  });
+
+  it('图片编辑同屏出现标题和正文但无 chrome 时仍应识别为 image_editing', () => {
     document.body.innerHTML = `
       <div class="publish-page">
         <div class="microapp-container">
@@ -248,7 +330,7 @@ describe('xhs publish machine', () => {
       </div>
     `;
 
-    expect(detectXhsPublishState()).toBe('final_form');
+    expect(detectXhsPublishState()).toBe('image_editing');
   });
 
   it('有图片预览时应识别为最终发布表单而非文字配图入口', () => {
@@ -374,7 +456,7 @@ describe('xhs publish machine', () => {
     expect(detectXhsPublishState()).toBe('final_form');
   });
 
-  it('closed shadow Host 应通过坐标点击触发发布', async () => {
+  it('closed shadow Host 应通过 _onPublish 实例方法触发发布', async () => {
     if (!customElements.get('xhs-publish-btn')) {
       class XhsClosedShadowBtn extends HTMLElement {
         connectedCallback(): void {
@@ -398,7 +480,30 @@ describe('xhs publish machine', () => {
         </div>
       </div>
     `;
-    document.getElementById('shadow-pub')?.addEventListener('click', () => {
+    let invokedMethod = '';
+    const pub = document.getElementById('shadow-pub') as HTMLElement & { _onPublish?: () => void };
+    pub._onPublish = () => {
+      invokedMethod = '_onPublish';
+      document.body.insertAdjacentHTML('beforeend', '<div>发布成功</div>');
+    };
+
+    const result = await runXhsSubmitPublishFlow();
+    expect(result.success).toBe(true);
+    expect(invokedMethod).toBe('_onPublish');
+    expect(document.body.innerText).toContain('发布成功');
+  }, 15000);
+
+  it('Host 无 _onPublish 时应 fallback 到 CustomEvent/click', async () => {
+    document.body.innerHTML = `
+      <div class="publish-page">
+        <div class="d-input"><input placeholder="填写标题会有更多赞哦" /></div>
+        <div class="ql-editor" contenteditable="true"></div>
+        <div class="publish-page-publish-btn">
+          <xhs-publish-btn id="fallback-pub" is-publish="true" submit-disabled="false">发布</xhs-publish-btn>
+        </div>
+      </div>
+    `;
+    document.getElementById('fallback-pub')?.addEventListener('click', () => {
       document.body.insertAdjacentHTML('beforeend', '<div>发布成功</div>');
     });
 
@@ -406,4 +511,15 @@ describe('xhs publish machine', () => {
     expect(result.success).toBe(true);
     expect(document.body.innerText).toContain('发布成功');
   }, 15000);
+
+  it('about:blank 子 frame 应拒绝 submit_publish 并给出明确错误', async () => {
+    const saved = window.location;
+    // jsdom 下模拟 about:blank 子 frame
+    vi.stubGlobal('location', { ...saved, href: 'about:blank', protocol: 'about:' });
+    const result = await runXhsSubmitPublishFlow();
+    vi.stubGlobal('location', saved);
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('PLATFORM_PAGE_CHANGED');
+    expect(result.message).toContain('about:blank');
+  });
 });

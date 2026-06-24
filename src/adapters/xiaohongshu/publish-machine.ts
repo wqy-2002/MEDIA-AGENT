@@ -9,7 +9,6 @@ import {
 } from '@/core/automation/dom-driver';
 import { collectDiagnostics, formatDiagnostics } from '@/core/automation/diagnostics';
 import { runStateMachine } from '@/core/automation/state-machine';
-import { verifyTextAppears } from '@/core/automation/verifier';
 import {
   deepQueryAll,
   getEditableText,
@@ -175,24 +174,41 @@ function isInsidePublishPage(el: HTMLElement): boolean {
   return root.contains(el);
 }
 
-/** 在 publish-page 内滚动到底部，使底部发布按钮进入视口 */
-async function scrollPublishPageToBottom(): Promise<void> {
-  const containers = [
-    document.querySelector<HTMLElement>('.publish-page'),
-    document.querySelector<HTMLElement>('.publish-page-content'),
-    document.querySelector<HTMLElement>('.publish-page-publish-btn'),
-    getPublishPageRoot(),
-    document.scrollingElement as HTMLElement | null,
-  ].filter((el): el is HTMLElement => Boolean(el));
-
+/** 在 publish-page 内滚动到底部，使底部发布按钮进入视口（优先增量滚动内部容器） */
+async function scrollXhsPublishContainersToBottom(): Promise<void> {
+  const prioritySelectors = [
+    '.publish-page-content',
+    '.microapp-container',
+    ...xhsSelectors.publishScrollContainers,
+  ];
   const seen = new Set<HTMLElement>();
-  for (const el of containers) {
-    if (seen.has(el)) continue;
-    seen.add(el);
-    el.scrollTop = el.scrollHeight;
+
+  for (const sel of prioritySelectors) {
+    document.querySelectorAll<HTMLElement>(sel).forEach((node) => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      try {
+        for (let i = 0; i < 5; i++) {
+          const step = node.clientHeight > 0 ? node.clientHeight : 400;
+          node.scrollTop += step;
+          if (node.scrollTop + node.clientHeight >= node.scrollHeight - 8) break;
+        }
+        node.scrollTop = node.scrollHeight;
+        node.scrollLeft = node.scrollWidth;
+      } catch {
+        // 部分节点不可滚动，忽略
+      }
+    });
+    await sleep(300);
   }
+
   window.scrollTo(0, document.body.scrollHeight);
-  await sleep(250);
+  await sleep(500);
+}
+
+/** @deprecated 兼容旧调用，内部转发至 scrollXhsPublishContainersToBottom */
+async function scrollPublishPageToBottom(): Promise<void> {
+  await scrollXhsPublishContainersToBottom();
 }
 
 function isLoginWall(): boolean {
@@ -293,20 +309,77 @@ function clickAtPoint(x: number, y: number, doc: Document = document): void {
   simulateClick(target);
 }
 
-/** 参考官方 clickPublishWidget：closed shadow 的 xhs-publish-btn 需坐标点击 Host 内部 */
-function clickXhsPublishElement(button: HTMLElement): void {
-  const doc = button.ownerDocument;
-  if (button.tagName.toLowerCase() === 'xhs-publish-btn') {
-    const rect = button.getBoundingClientRect();
-    const y = rect.top + rect.height / 2;
-    for (const ratio of [0.5, 0.65, 0.75]) {
-      clickAtPoint(rect.left + rect.width * ratio, y, doc);
+/** closed shadow Host 上可能暴露的发布/存草稿实例方法（对齐 OpenCLI #1606） */
+const XHS_PUBLISH_METHOD_NAMES = ['_onPublish', '_onSubmit', 'onPublish', '_handlePublish'];
+const XHS_DRAFT_METHOD_NAMES = ['_onSave', '_onSaveDraft', '_onDraft'];
+
+export interface XhsPublishHostInvokeResult {
+  invoked: boolean;
+  method?: string;
+}
+
+/** 最近一次 xhs-publish-btn Host 方法调用结果，供诊断日志 */
+let lastPublishHostInvoke: XhsPublishHostInvokeResult | null = null;
+
+/** 直接调用 Host 上的发布/存草稿回调，穿透 closed shadow */
+function invokeXhsPublishHost(host: HTMLElement, isDraft = false): XhsPublishHostInvokeResult {
+  const names = isDraft ? XHS_DRAFT_METHOD_NAMES : XHS_PUBLISH_METHOD_NAMES;
+  const el = host as HTMLElement & Record<string, unknown>;
+  for (const name of names) {
+    const fn = el[name];
+    if (typeof fn === 'function') {
+      (fn as () => void).call(el);
+      return { invoked: true, method: name };
     }
-    simulateClick(button);
-    button.click();
-    return;
+  }
+  return { invoked: false };
+}
+
+/**
+ * 点击发布控件：xhs-publish-btn 优先 invoke Host 方法，否则 fallback 到 CustomEvent/坐标点击。
+ * closed shadow 下外层 click 无效，见 OpenCLI #1606。
+ */
+function clickXhsPublishElement(button: HTMLElement, isDraft = false): XhsPublishHostInvokeResult | null {
+  lastPublishHostInvoke = null;
+  if (button.tagName.toLowerCase() === 'xhs-publish-btn') {
+    if (isButtonUsable(button)) {
+      const invoked = invokeXhsPublishHost(button, isDraft);
+      lastPublishHostInvoke = invoked;
+      if (invoked.invoked) return invoked;
+
+      const doc = button.ownerDocument;
+      button.dispatchEvent(
+        new CustomEvent('publish', {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      const rect = button.getBoundingClientRect();
+      const y = rect.top + rect.height / 2;
+      for (const ratio of [0.5, 0.65, 0.75]) {
+        clickAtPoint(rect.left + rect.width * ratio, y, doc);
+      }
+      simulateClick(button);
+      button.click();
+    }
+    return lastPublishHostInvoke;
   }
   reliableClick(button);
+  return null;
+}
+
+/** 发布后可能出现的二次确认弹窗（短轮询点击） */
+async function tryDismissPublishConfirmDialog(timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await clickByText(['确认发布', '确定', '继续发布'], {
+      exactText: false,
+      tags: 'button,div[role="button"],span,.d-button',
+      timeout: 800,
+    });
+    if (res.success) return;
+    await sleep(400);
+  }
 }
 
 function isXhsPublishHost(el: HTMLElement): boolean {
@@ -335,18 +408,15 @@ function isButtonUsable(el: HTMLElement): boolean {
 }
 
 /**
- * 从候选列表中选取第一个可点击发布按钮（对齐 xiaohongshu-mcp pickClickableButton）。
- * @param requirePublishText 为 true 时要求文本含「发布」，并排除侧栏「发布笔记」
+ * 从候选列表中选取第一个可点击发布按钮。
+ * @param requirePublishText 为 true 时要求文本含「发布/立即发布」，并排除侧栏与误点项
  */
 function pickClickableButton(
   elements: HTMLElement[],
   requirePublishText = false,
 ): HTMLElement | null {
   for (const el of elements) {
-    if (requirePublishText) {
-      const text = (el.textContent ?? '').replace(/\s/g, '');
-      if (!text.includes('发布') || text.includes('发布笔记')) continue;
-    }
+    if (requirePublishText && !isValidPublishButtonText(el)) continue;
     if (!isButtonUsable(el)) continue;
     return el;
   }
@@ -387,16 +457,102 @@ function findTextImageDraftEditor(): HTMLElement | null {
   return queryTextImageDraftEditor();
 }
 
+/** 图片编辑 overlay 上的智能标题输入（4x22 小框，不是最终发布标题） */
+function isImageOverlayTitleInput(el: HTMLElement): boolean {
+  const cls = String(el.className ?? '');
+  if (/--color-text-title|smart-title|image-title|cover-title/i.test(cls)) return true;
+  if (el.closest('[class*="img-edit"], [class*="image-edit"], [class*="cover-edit"], .img-preview-area')) {
+    return true;
+  }
+  const rect = el.getBoundingClientRect();
+  // 真实标题框宽度通常 > 100px；overlay 智能标题常见 4~80px 宽
+  if (rect.width > 0 && rect.width < 80) return true;
+  return false;
+}
+
+/** 输入框尺寸是否达到可填写的主表单字段 */
+function isMeaningfulFormFieldRect(el: HTMLElement, minWidth = 80, minHeight = 18): boolean {
+  const rect = el.getBoundingClientRect();
+  return rect.width >= minWidth && rect.height >= minHeight;
+}
+
+/** 元素在 DOM 中布局存在（display/尺寸 OK），不要求在 window 视口内 */
+function isLayoutPresent(el: HTMLElement): boolean {
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/** 图片编辑阶段（顶部 图片编辑 N/M + 封面建议） */
+function isImageEditingStage(text = publishPageText()): boolean {
+  return (
+    /图片编辑\s*\d+\s*\/\s*\d+/.test(text) ||
+    (/图片编辑/.test(text) && /获取封面建议/.test(text))
+  );
+}
+
+/** 最终表单区 UI 信号：话题/用户/表情 或 xhs-publish-btn Host */
+function hasFinalFormChrome(): boolean {
+  const pageRoot = getPublishPageRoot();
+  for (const sel of ['xhs-publish-btn[is-publish="true"]', 'xhs-publish-btn']) {
+    const host = pageRoot.querySelector<HTMLElement>(sel);
+    if (host && isLayoutPresent(host) && isButtonUsable(host)) return true;
+  }
+  const text = publishPageText();
+  return /话题/.test(text) && /用户/.test(text) && /表情/.test(text);
+}
+
+/** 是否为最终发布表单标题框（排除图片编辑 smart title overlay） */
+function isFinalTitleInput(el: HTMLElement): boolean {
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false;
+  if (!isInsidePublishPage(el) || !isLayoutPresent(el)) return false;
+  if (isImageOverlayTitleInput(el)) return false;
+
+  const placeholder = el.getAttribute('placeholder') ?? '';
+  if (/标题|填写/.test(placeholder)) {
+    return isMeaningfulFormFieldRect(el, 60, 18);
+  }
+
+  if (el.closest('.d-input, .title-container, .title-input, .title-wrap')) {
+    return isMeaningfulFormFieldRect(el, 60, 18);
+  }
+
+  return false;
+}
+
+/** 是否为最终发布正文编辑器（排除图片编辑区内的 contenteditable） */
+function isFinalBodyEditor(el: HTMLElement): boolean {
+  if (!isInsidePublishPage(el) || !isLayoutPresent(el)) return false;
+  if (el.closest('.img-preview-area, [class*="img-edit"], [class*="image-edit"], [class*="cover-edit"]')) {
+    return false;
+  }
+
+  const isEditor =
+    el.isContentEditable ||
+    el.getAttribute('role') === 'textbox' ||
+    el.matches?.('.tiptap, .ProseMirror, .ql-editor, [data-placeholder*="正文"]');
+  if (!isEditor) return false;
+
+  return isMeaningfulFormFieldRect(el, 120, 32);
+}
+
 /** 查找最终发布表单标题框（草稿阶段返回 null） */
 function findFinalTitleInput(): HTMLElement | null {
   if (isTextImageDraftActive()) return null;
   return (
     queryCandidates({
       selectors: xhsSelectors.titleInput,
-      visible: true,
-      ...inPublishPageQuery,
+      visible: false,
+      predicate: isFinalTitleInput,
     })[0] ?? null
   );
+}
+
+/** 是否存在标题输入框 */
+function hasTitleInput(): boolean {
+  return Boolean(findFinalTitleInput());
 }
 
 /** 查找最终发布表单正文编辑器（草稿阶段返回 null） */
@@ -408,15 +564,30 @@ function findFinalBodyEditor(): HTMLElement | null {
   return (
     queryCandidates({
       selectors: xhsSelectors.finalBodyEditor,
-      visible: true,
-      ...inPublishPageQuery,
+      visible: false,
+      predicate: isFinalBodyEditor,
     })[0] ?? null
   );
 }
 
-/** 是否具备最终发布表单字段（标题 + 正文，且不在草稿阶段） */
-function hasFinalFormFields(): boolean {
-  return Boolean(findFinalTitleInput() && findFinalBodyEditor());
+/** 是否存在正文编辑器 */
+function hasContentEditor(): boolean {
+  return Boolean(findFinalBodyEditor());
+}
+
+/** 是否具备真实最终发布表单（标题 placeholder + 正文 + 图片编辑阶段需 chrome/Host） */
+function hasRealFinalFormFields(): boolean {
+  if (!hasTitleInput() || !hasContentEditor()) return false;
+  const title = findFinalTitleInput();
+  const ph = title?.getAttribute('placeholder') ?? '';
+  if (!/填写标题|标题/.test(ph)) return false;
+  if (isImageEditingStage() && !hasFinalFormChrome()) return false;
+  return true;
+}
+
+/** 图片编辑页是否已推进到可填写的最终表单 */
+function hasAdvancedFromImageEditing(): boolean {
+  return hasRealFinalFormFields() && Boolean(findRealPublishButton() || hasFinalFormChrome());
 }
 
 /** publish-page 内是否存在可见的「生成图片」按钮（草稿阶段信号） */
@@ -527,27 +698,43 @@ function collectAccessibleIframeDocuments(): Document[] {
   return docs;
 }
 
-/** 查找真正可点击的发布按钮：旧版优先 → 2026 ce-btn → plain Host 兜底 */
+/** 查找真正可点击的发布按钮：新版 Host → ce-btn → 旧版 → 文本兜底 */
 function findRealPublishButton(): HTMLElement | null {
   for (const root of collectPublishButtonRoots()) {
     const scoped = (els: HTMLElement[]) => els.filter(isPublishButtonCandidate);
 
+    // 1) xhs-publish-btn[is-publish="true"]
+    const hosts = scoped(
+      queryPublishButtonsBySelectors(root, [
+        'xhs-publish-btn[is-publish="true"]',
+        ...xhsSelectors.publishButtonNew,
+      ]),
+    );
+    const hostBtn = pickClickableButton(hosts, false);
+    if (hostBtn && isPublishHostClickable(hostBtn)) return hostBtn;
+
+    // 2) button.ce-btn.bg-red（需文本二次过滤）
+    const ceButtons = scoped(queryPublishButtonsBySelectors(root, xhsSelectors.publishButtonCe2026));
+    const ceBtn = pickClickableButton(ceButtons, true);
+    if (ceBtn && isPublishHostClickable(ceBtn)) return ceBtn;
+
+    // 3) 旧版 .publish-page-publish-btn
     const legacy = scoped(
       queryPublishButtonsBySelectors(root, [
         ...xhsSelectors.publishButtonHost,
         ...xhsSelectors.publishButtonOld,
+        ...xhsSelectors.submitButton,
       ]),
     );
     const legacyBtn = pickClickableButton(legacy, false);
     if (legacyBtn && isPublishHostClickable(legacyBtn)) return legacyBtn;
 
-    const ceButtons = scoped(queryPublishButtonsBySelectors(root, xhsSelectors.publishButtonCe2026));
-    const ceBtn = pickClickableButton(ceButtons, true);
-    if (ceBtn && isPublishHostClickable(ceBtn)) return ceBtn;
-
-    const hosts = scoped(queryPublishButtonsBySelectors(root, xhsSelectors.publishButtonNew));
-    const hostBtn = pickClickableButton(hosts, false);
-    if (hostBtn && isPublishHostClickable(hostBtn)) return hostBtn;
+    // 4) 文本兜底：发布 / 立即发布
+    const textFallback = scoped(
+      queryPublishButtonsBySelectors(root, xhsSelectors.publishButtonTextFallback),
+    ).filter((el) => isValidPublishButtonText(el) || isXhsPublishHost(el));
+    const textBtn = pickClickableButton(textFallback, false);
+    if (textBtn && isPublishHostClickable(textBtn)) return textBtn;
   }
   return null;
 }
@@ -556,7 +743,7 @@ function findRealPublishButton(): HTMLElement | null {
 function isReadyToSubmit(): boolean {
   if (isTextImageDraftActive()) return false;
   if (hasVisibleGenerateImageButton()) return false;
-  return Boolean(findRealPublishButton() && hasFinalFormFields());
+  return Boolean(findRealPublishButton() && hasRealFinalFormFields());
 }
 
 /** 采集填写流程诊断信息，写入任务日志 */
@@ -576,7 +763,7 @@ export function getXhsPublishFlowDiagnostics(): Record<string, unknown> {
     publishModeSignals: {
       textImageDraft: isTextImageDraftActive(),
       uploadedImages: countXhsUploadedImages(),
-      hasFinalForm: hasFinalFormFields(),
+      hasFinalForm: hasRealFinalFormFields(),
       readyToSubmit: isReadyToSubmit(),
       hasGenerateButton: hasVisibleGenerateImageButton(),
     },
@@ -586,32 +773,62 @@ export function getXhsPublishFlowDiagnostics(): Record<string, unknown> {
     },
     publishButtonHosts: collectPublishButtonHosts(),
     publishButtons: scanXhsPublishButtons().safeData,
+    lastPublishHostInvoke,
   };
 }
 
-/** 校验发布成功（优先 publish-page 内文案，Toast 在全页时兜底） */
+/** 校验发布成功/失败（优先 publish-page 内文案，URL 跳转与 Toast 兜底） */
 export async function verifyXhsPublishSuccess(timeout = 15000): Promise<ActionResult> {
-  const successPatterns = ['发布成功', '已发布', '发布审核中', '笔记管理'];
+  const successTexts = ['发布成功', '笔记发布成功', '已发布', '发布审核中', '笔记管理'];
+  const failureTexts = ['发布失败', '提交失败', '内容违规', '请修改后再发布', '账号异常'];
+  const successUrlKeywords = [
+    'publish/success',
+    'published=true',
+    'content/manage',
+    '/notes',
+    'note/manage',
+    '/success',
+  ];
+
   const start = Date.now();
   while (Date.now() - start < timeout) {
+    const url = location.href.toLowerCase();
     const scoped = publishPageText();
     const full = bodyText();
-    if (successPatterns.some((p) => scoped.includes(p) || full.includes(p))) {
+    const merged = `${scoped}\n${full}`;
+
+    for (const failure of failureTexts) {
+      if (merged.includes(failure)) {
+        return {
+          success: false,
+          errorCode: 'SUBMIT_FAILED',
+          message: `检测到发布失败信号：${failure}`,
+        };
+      }
+    }
+
+    if (successUrlKeywords.some((kw) => url.includes(kw))) {
+      return { success: true, message: '检测到 URL 跳转到作品管理页' };
+    }
+
+    if (successTexts.some((p) => scoped.includes(p) || full.includes(p))) {
       return { success: true, message: '检测到发布成功信号' };
     }
+
     await sleep(500);
   }
-  return verifyTextAppears(successPatterns, { timeout: 0, state: 'success' });
+
+  return {
+    success: false,
+    errorCode: 'SUBMIT_UNKNOWN',
+    message: '点击发布后长时间未检测到成功或失败信号',
+  };
 }
 
-/** 图片编辑/封面建议是文字配图后的中间页，不应误判为最终发布表单 */
+/** 图片编辑/封面建议区域：仅在没有标题+正文编辑器时才算中间页 */
 function isImageEditingPage(text: string): boolean {
-  return (
-    /图片编辑/.test(text) ||
-    /获取封面建议/.test(text) ||
-    /编辑\s*智能标题/.test(text) ||
-    /图片编辑\s*\d+\s*\/\s*\d+/.test(text)
-  );
+  if (hasRealFinalFormFields()) return false;
+  return isImageEditingStage(text);
 }
 
 function getElementWindow(el: HTMLElement): Window {
@@ -707,9 +924,16 @@ function scorePublishCandidate(el: HTMLElement): number {
   return score;
 }
 
-/** 文本兜底匹配的发布按钮文案（严格排除左侧「发布笔记」菜单） */
-function isPublishButtonText(text: string): boolean {
-  return /^(发布|立即发布|确认发布)$/.test(text);
+/** 文本兜底匹配的发布按钮文案（严格排除定时发布、发布设置、侧栏菜单等） */
+function isValidPublishButtonText(el: HTMLElement): boolean {
+  if (isXhsPublishHost(el)) {
+    return el.getAttribute('is-publish') === 'true';
+  }
+  const text = normalizeText(el.textContent ?? el.innerText ?? '');
+  if (!text) return false;
+  if (/定时发布|发布设置|发布失败|发布笔记/.test(text)) return false;
+  if (/^(发布|立即发布|确认发布)$/.test(text)) return true;
+  return text.includes('立即发布');
 }
 
 function normalizeText(text: string): string {
@@ -763,10 +987,9 @@ function scanXhsPublishButtonCandidates(): PublishButtonCandidate[] {
     queryPublishButtonHosts(root.body).forEach((el) => pushCandidate(el, frame));
   }
 
-  // 3) 文本兜底：仅 publish-page 内，仅供诊断，不作为点击依据
+  // 3) 文本兜底：供诊断扫描
   pageRoot.querySelectorAll<HTMLElement>(selector).forEach((el) => {
-    const text = normalizeText(el.textContent ?? '');
-    if (!isPublishButtonText(text)) return;
+    if (!isValidPublishButtonText(el) && !isXhsPublishHost(el)) return;
     pushCandidate(el, location.href);
   });
 
@@ -992,33 +1215,47 @@ async function handleUnknownPublishState(): Promise<ActionResult> {
 export function detectXhsPublishState(): XhsPublishState {
   const text = publishPageText();
   if (isLoginWall()) return 'login_wall';
-  if (/发布成功|已发布|发布审核中/.test(bodyText()) || /发布成功|已发布|发布审核中/.test(text)) {
+  if (
+    /发布成功|笔记发布成功|已发布|发布审核中/.test(bodyText()) ||
+    /发布成功|笔记发布成功|已发布|发布审核中/.test(text)
+  ) {
     return 'success';
   }
+  if (/发布失败|提交失败|内容违规|请修改后再发布|账号异常/.test(text)) return 'blocked';
   if (/验证码|安全验证|违规|不可发布|生成失败|上传失败/.test(text)) return 'blocked';
-  if (/图片生成中|生成中|上传中|处理中/.test(text)) return 'image_generating';
+  if (/图片生成中|生成中|上传中|处理中|提交中/.test(text)) return 'image_generating';
 
-  // 文字配图草稿优先于终态，避免草稿编辑器被误判为最终表单
+  // 图片编辑视口：无真实最终表单时强制 image_editing
+  if (isImageEditingStage(text) && !hasRealFinalFormFields()) {
+    return 'image_editing';
+  }
+
+  // 真实最终表单：标题 placeholder + 正文 +（图片编辑阶段需 chrome/Host）
+  if (hasRealFinalFormFields()) {
+    return isReadyToSubmit() ? 'publish_button_ready' : 'final_form';
+  }
+
+  // 文字配图草稿优先于预览/编辑中间页
   if (isTextImageDraftActive()) {
     if (/选择一个喜欢的卡片|换配色/.test(text) && /下一步/.test(text)) return 'image_preview';
     if (findTextImageDraftEditor()) return 'text_image_editor';
   }
 
-  if (/选择一个喜欢的卡片|换配色|下一步/.test(text) && !isTextImageDraftActive()) {
+  // 卡片预览：无最终表单时才判定
+  if (/选择一个喜欢的卡片|换配色/.test(text) && /下一步/.test(text)) {
     return 'image_preview';
   }
-  if (isImageEditingPage(text)) {
-    if (hasFinalFormFields()) return 'final_form';
-    return 'image_editing';
-  }
+
+  // 图片编辑中间页兜底
+  if (isImageEditingPage(text)) return 'image_editing';
 
   const uploadedCount = countXhsUploadedImages();
-  if (uploadedCount > 0 && hasFinalFormFields()) {
+  if (uploadedCount > 0 && hasRealFinalFormFields()) {
     return isReadyToSubmit() ? 'publish_button_ready' : 'final_form';
   }
 
   if (isReadyToSubmit()) return 'publish_button_ready';
-  if (hasFinalFormFields()) return 'final_form';
+  if (hasRealFinalFormFields()) return 'final_form';
 
   if (/上传图片|文字配图/.test(text)) return 'image_entry';
   if (/上传视频/.test(text) && /上传图文/.test(text)) return 'video_tab';
@@ -1033,6 +1270,20 @@ function fail(state: XhsPublishState, message: string): ActionResult {
     message: `${message}\n${formatDiagnostics(diagnostics)}`,
     diagnostics,
   };
+}
+
+/** 校验当前 content script 是否在可执行发布的主 frame（非 about:blank 子 frame） */
+function ensureXhsPublishPageFrame(): PublishResult | null {
+  if (location.href === 'about:blank' || location.protocol === 'about:') {
+    return {
+      success: false,
+      errorCode: 'PLATFORM_PAGE_CHANGED',
+      message:
+        '当前运行在 about:blank 子 frame，无法识别发布页。请确保扩展在主 frame 执行 submit_publish（frameId:0）。',
+      resultUrl: location.href,
+    };
+  }
+  return null;
 }
 
 /**
@@ -1171,12 +1422,33 @@ async function fillDraftAndGenerate(ctx: XhsPublishContext): Promise<ActionResul
   return { success: true, message: '文字配图已提交生成并进入下一阶段' };
 }
 
+/** 点击「下一步」后等待标题框 + 正文编辑器出现 */
+async function waitAfterClickNext(timeoutMs = 30000): Promise<ActionResult> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = detectXhsPublishState();
+    if (state === 'final_form' || state === 'publish_button_ready') {
+      return { success: true, message: '已进入最终发布表单' };
+    }
+    if (hasRealFinalFormFields()) {
+      return { success: true, message: '已检测到标题框和正文编辑器' };
+    }
+    await sleep(800);
+  }
+  return fail('image_preview', '点击“下一步”后未检测到标题框和正文编辑器');
+}
+
 async function waitPreviewAndNext(): Promise<ActionResult> {
   const ok = await waitForText(['下一步', '选择一个喜欢的卡片'], 60000);
   if (!ok) return fail('image_generating', '等待图片生成完成超时');
 
   if (detectXhsPublishState() === 'text_image_editor') {
     return fail('image_generating', '仍在文字配图草稿页，图片尚未生成');
+  }
+
+  // 已在最终表单则无需再点下一步
+  if (hasRealFinalFormFields()) {
+    return { success: true, message: '当前已在最终发布表单' };
   }
 
   const next = await clickByText(['下一步'], {
@@ -1186,24 +1458,80 @@ async function waitPreviewAndNext(): Promise<ActionResult> {
   });
   if (!next.success) return fail('image_preview', '未能点击“下一步”');
 
-  const start = Date.now();
-  while (Date.now() - start < 20000) {
-    if (hasFinalFormFields()) {
-      return { success: true, message: '已进入最终发布表单' };
-    }
-    await sleep(500);
-  }
-  return fail('image_preview', '点击“下一步”后未进入最终发布表单');
+  return waitAfterClickNext(30000);
 }
 
-async function waitImageEditingForm(): Promise<ActionResult> {
+async function advanceFromImageEditingPage(): Promise<ActionResult> {
   const start = Date.now();
-  while (Date.now() - start < 20000) {
-    if (hasFinalFormFields()) return { success: true, message: '图片编辑页已出现最终发布表单' };
-    await scrollPublishPageToBottom();
-    await sleep(500);
+  const timeout = 60000;
+
+  while (Date.now() - start < timeout) {
+    if (hasAdvancedFromImageEditing()) {
+      return { success: true, message: '图片编辑页已进入最终发布表单' };
+    }
+
+    await scrollXhsPublishContainersToBottom();
+
+    const state = detectXhsPublishState();
+    if (state === 'image_editing' || state === 'image_preview') {
+      await clickByText(['下一步', '完成编辑', '继续'], {
+        exactText: false,
+        tags: 'button,div[role="button"],span,.d-button',
+        timeout: 2000,
+      });
+    }
+
+    await sleep(800);
   }
-  return fail('image_editing', '图片编辑页未出现标题和正文编辑区');
+
+  return fail(
+    'image_editing',
+    '图片编辑页未出现真正的标题框和正文编辑器（请完成图片编辑或向下滚动）',
+  );
+}
+
+/** 找不到发布按钮时 dump 全部候选，便于下次排错 */
+function dumpPublishButtonCandidates(): Array<Record<string, unknown>> {
+  const selectors = [
+    'button',
+    '[role="button"]',
+    '[class*="btn"]',
+    '[class*="button"]',
+    '[class*="publish"]',
+    '[class*="submit"]',
+    '[class*="red"]',
+    'xhs-publish-btn',
+  ];
+  const pageRoot = getPublishPageRoot();
+  const seen = new Set<HTMLElement>();
+  const items: Array<Record<string, unknown>> = [];
+
+  for (const sel of selectors) {
+    pageRoot.querySelectorAll<HTMLElement>(sel).forEach((el) => {
+      if (seen.has(el)) return;
+      seen.add(el);
+      const rect = el.getBoundingClientRect();
+      items.push({
+        tagName: el.tagName.toLowerCase(),
+        text: normalizeText(el.textContent ?? el.innerText ?? ''),
+        className: String(el.className ?? ''),
+        disabled: el instanceof HTMLButtonElement ? el.disabled : undefined,
+        ariaDisabled: el.getAttribute('aria-disabled'),
+        submitDisabled: el.getAttribute('submit-disabled'),
+        isPublish: el.getAttribute('is-publish'),
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        visible: isElementVisibleInOwnFrame(el),
+        usable: isButtonUsable(el),
+      });
+    });
+  }
+
+  return items.sort((a, b) => Number(b.visible) - Number(a.visible));
 }
 
 /**
@@ -1239,11 +1567,22 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
     return { success: true, message: '最终表单已填写，已跳过重复填写' };
   }
 
+  if (isImageEditingStage() && !hasRealFinalFormFields()) {
+    return fail('image_editing', '仍在图片编辑页，尚未进入最终发布表单');
+  }
+
   let titleEl: HTMLElement | null = null;
   if (ctx.content.title) {
-    titleEl = findFinalTitleInput() ??
-      (await waitForCandidate({ selectors: xhsSelectors.titleInput, visible: true }, 10000));
-    if (titleEl) await fillElement(titleEl, ctx.content.title);
+    titleEl =
+      findFinalTitleInput() ??
+      (await waitForCandidate(
+        { selectors: xhsSelectors.titleInput, visible: false, predicate: isFinalTitleInput },
+        10000,
+      ));
+    if (!titleEl) {
+      return fail('final_form', '未找到最终发布标题输入框（当前可能仍在图片编辑页）');
+    }
+    await fillElement(titleEl, ctx.content.title);
     await sleep(500);
     const titleLengthError = checkXhsLengthErrors();
     if (titleLengthError?.startsWith('标题')) {
@@ -1256,7 +1595,10 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
   if (body) {
     contentEl =
       findFinalBodyEditor() ??
-      (await waitForCandidate({ selectors: xhsSelectors.finalBodyEditor, visible: true }, 10000));
+      (await waitForCandidate(
+        { selectors: xhsSelectors.finalBodyEditor, visible: false, predicate: isFinalBodyEditor },
+        10000,
+      ));
     if (!contentEl) return fail('final_form', '未找到最终正文编辑器');
     await fillElement(contentEl, body);
     await sleep(1000);
@@ -1292,10 +1634,21 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
 }
 
 async function scrollAndWaitPublishReady(timeout = 60000): Promise<ActionResult> {
+  if (!hasRealFinalFormFields()) {
+    const state = detectXhsPublishState();
+    return fail(state, '尚未进入最终发布表单，无法等待发布按钮');
+  }
+
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    await scrollPublishPageToBottom();
+    await scrollXhsPublishContainersToBottom();
     if (isReadyToSubmit()) return { success: true, message: '发布按钮已就绪' };
+    if (isImageEditingStage() && !hasRealFinalFormFields()) {
+      return fail('image_editing', '滚动后仍在图片编辑视口，未找到最终表单');
+    }
+    if (!hasRealFinalFormFields()) {
+      return fail(detectXhsPublishState(), '最终表单字段已消失');
+    }
     const state = detectXhsPublishState();
     if (state === 'blocked') return fail(state, '发布表单被平台提示阻塞');
     if (state === 'text_image_editor') {
@@ -1307,6 +1660,10 @@ async function scrollAndWaitPublishReady(timeout = 60000): Promise<ActionResult>
 }
 
 async function fillFinalFormAndWaitPublishReady(ctx: XhsPublishContext): Promise<ActionResult> {
+  if (isImageEditingStage() && !hasRealFinalFormFields()) {
+    const advanced = await advanceFromImageEditingPage();
+    if (!advanced.success) return advanced;
+  }
   const filled = await fillFinalForm(ctx);
   if (!filled.success) return filled;
   return scrollAndWaitPublishReady();
@@ -1316,6 +1673,13 @@ async function finishFillFlow(ctx: XhsPublishContext): Promise<ActionResult> {
   const stateBefore = detectXhsPublishState();
   if (stateBefore === 'text_image_editor') {
     return fail(stateBefore, '填写流程结束时仍在文字配图草稿页，图片未生成');
+  }
+  if (stateBefore === 'image_editing') {
+    const advanced = await advanceFromImageEditingPage();
+    if (!advanced.success) return advanced;
+  }
+  if (!hasRealFinalFormFields()) {
+    return fail(stateBefore, '填写流程结束时未检测到最终发布表单（标题+正文）');
   }
 
   const filled = await fillFinalForm(ctx);
@@ -1344,6 +1708,15 @@ export async function runXhsFillContentFlow(
   content: GeneratedContent,
   options: XhsFillContentOptions = {},
 ): Promise<ActionResult> {
+  const frameError = ensureXhsPublishPageFrame();
+  if (frameError) {
+    return {
+      success: false,
+      errorCode: frameError.errorCode,
+      message: frameError.message,
+    };
+  }
+
   const publishMode: XhsPublishMode =
     options.publishMode ?? (options.preferImageUpload ? 'image_upload' : 'text_image');
   const ctx: XhsPublishContext = {
@@ -1355,7 +1728,7 @@ export async function runXhsFillContentFlow(
     name: '小红书发布填写流程',
     ctx,
     detect: detectXhsPublishState,
-    terminalStates: ['publish_button_ready', 'final_form'],
+    terminalStates: ['publish_button_ready'],
     blockedStates: ['login_wall', 'blocked'],
     maxTransitions: 20,
     steps: {
@@ -1382,8 +1755,8 @@ export async function runXhsFillContentFlow(
       },
       image_editing: {
         state: 'image_editing',
-        description: '等待图片编辑页表单',
-        run: waitImageEditingForm,
+        description: '等待图片编辑页进入最终表单',
+        run: advanceFromImageEditingPage,
       },
       final_form: {
         state: 'final_form',
@@ -1423,11 +1796,15 @@ export async function runXhsFillContentFlow(
 
 /** 运行小红书最终发布状态机并验证提交 */
 export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
+  const frameError = ensureXhsPublishPageFrame();
+  if (frameError) return frameError;
+
+  await scrollXhsPublishContainersToBottom();
   const ready = await scrollAndWaitPublishReady(12000);
   if (!ready.success) {
     return {
       success: false,
-      errorCode: hasFinalFormFields() ? 'FORM_NOT_READY' : ready.errorCode,
+      errorCode: hasRealFinalFormFields() ? 'FORM_NOT_READY' : ready.errorCode,
       message: ready.message,
     };
   }
@@ -1451,11 +1828,12 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
   }
   const button = findRealPublishButton();
   if (!button || !isElementVisibleInOwnFrame(button)) {
+    const dumped = dumpPublishButtonCandidates();
     const diagnostics = collectDiagnostics(detectXhsPublishState());
     return {
       success: false,
-      errorCode: hasFinalFormFields() ? 'BUTTON_NOT_FOUND' : 'FORM_NOT_READY',
-      message: `表单字段已填写，但当前 frame 未找到可点击发布按钮。\n${formatDiagnostics(diagnostics)}`,
+      errorCode: hasRealFinalFormFields() ? 'BUTTON_NOT_FOUND' : 'FORM_NOT_READY',
+      message: `表单字段已填写，但当前 frame 未找到可点击发布按钮。\n${formatDiagnostics(diagnostics)}\n候选按钮(${dumped.length}): ${JSON.stringify(dumped.slice(0, 30), null, 0)}`,
       resultUrl: location.href,
     };
   }
@@ -1463,17 +1841,30 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
   button.scrollIntoView({ block: 'center', inline: 'center' });
   await sleep(200);
   clickXhsPublishElement(button);
+  await tryDismissPublishConfirmDialog(3000);
 
   const submitted = await verifyXhsPublishSuccess(45000);
   if (submitted.success) {
-    return { success: true, resultUrl: location.href, message: '发布已提交' };
+    return {
+      success: true,
+      resultUrl: location.href,
+      message: lastPublishHostInvoke?.invoked
+        ? `发布已提交（Host.${lastPublishHostInvoke.method}）`
+        : '发布已提交',
+    };
   }
 
-  // 必须检测到明确成功信号，不再因 URL/按钮变化乐观判成功
+  const errorCode =
+    submitted.errorCode === 'SUBMIT_FAILED'
+      ? 'SUBMIT_FAILED'
+      : submitted.errorCode === 'SUBMIT_UNKNOWN'
+        ? 'SUBMIT_UNKNOWN'
+        : 'CLICKED_BUT_NOT_PUBLISHED';
+
   return {
     success: false,
-    errorCode: 'CLICKED_BUT_NOT_PUBLISHED',
-    message: submitted.message,
+    errorCode,
+    message: `${submitted.message ?? '发布未确认'}${lastPublishHostInvoke ? `\nHost调用: ${JSON.stringify(lastPublishHostInvoke)}` : ''}`,
     resultUrl: location.href,
   };
 }
@@ -1509,13 +1900,20 @@ export async function runXhsFramePublishClickFlow(): Promise<PublishResult> {
   button.scrollIntoView({ block: 'center', inline: 'center' });
   await sleep(200);
   clickXhsPublishElement(button);
+  await tryDismissPublishConfirmDialog(3000);
   const submitted = await verifyXhsPublishSuccess(15000);
   if (submitted.success) {
     return { success: true, resultUrl: location.href, message: 'frame 内点击发布成功' };
   }
+  const errorCode =
+    submitted.errorCode === 'SUBMIT_FAILED'
+      ? 'SUBMIT_FAILED'
+      : submitted.errorCode === 'SUBMIT_UNKNOWN'
+        ? 'SUBMIT_UNKNOWN'
+        : 'CLICKED_BUT_NOT_PUBLISHED';
   return {
     success: false,
-    errorCode: 'CLICKED_BUT_NOT_PUBLISHED',
+    errorCode,
     message: submitted.message,
     resultUrl: location.href,
   };

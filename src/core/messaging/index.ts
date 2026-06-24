@@ -17,13 +17,15 @@ export async function sendToBackground<T = unknown>(
   }
 }
 
-/** 向指定标签页的 Content Script 发送消息 */
+/** 向指定标签页的 Content Script 发送消息（默认主 frame，避免 about:blank 子 frame 抢答） */
 export async function sendToTab<T = unknown>(
   tabId: number,
   message: ExtensionMessage,
+  options?: { frameId?: number },
 ): Promise<MessageResponse<T>> {
+  const frameId = options?.frameId ?? 0;
   try {
-    const res = (await chrome.tabs.sendMessage(tabId, message)) as MessageResponse<T>;
+    const res = (await chrome.tabs.sendMessage(tabId, message, { frameId })) as MessageResponse<T>;
     return res ?? { ok: false, errorMessage: '无响应' };
   } catch (err) {
     return {
