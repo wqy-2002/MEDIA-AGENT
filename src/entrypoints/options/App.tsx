@@ -9,14 +9,7 @@ import { clearAllData } from '@/core/storage/db';
 import { sendToBackground } from '@/core/messaging';
 import { PLATFORM_LABELS } from '@/adapters/registry';
 
-// Options 设置页（参见开发文档第 7.2 节）。
-
-const PLATFORMS: PlatformName[] = [
-  'xiaohongshu',
-  'douyin',
-  'wechat_channel',
-  'wechat_official',
-];
+const PLATFORMS: PlatformName[] = ['xiaohongshu', 'sohu'];
 
 const AUTOMATION_LABELS: Record<keyof AppSettings['automation'], string> = {
   autoPublish: '自动发布',
@@ -71,7 +64,6 @@ export default function App() {
         <p className="mt-1 text-sm text-gray-500">配置模型、默认偏好、自动化开关与频率限制。</p>
       </header>
 
-      {/* 模型配置 */}
       <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-800">模型配置</h2>
         <Field label="API Key">
@@ -112,7 +104,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* 默认偏好 */}
       <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-800">默认偏好</h2>
         <Field label="默认平台">
@@ -144,7 +135,6 @@ export default function App() {
         </Field>
       </section>
 
-      {/* 自动化开关 */}
       <section className="space-y-2 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-800">自动化开关</h2>
         <p className="text-xs text-gray-500">
@@ -166,7 +156,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* 平台开关 */}
       <section className="space-y-2 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-800">平台开关</h2>
         <div className="grid grid-cols-2 gap-2">
@@ -185,7 +174,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* 频率限制 */}
       <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-800">频率限制</h2>
         <Field label="单日评论上限">
@@ -229,19 +217,17 @@ export default function App() {
         </Field>
       </section>
 
-      {/* 权限与隐私说明 */}
       <section className="space-y-2 rounded-lg border border-gray-200 bg-white p-4 shadow-sm text-xs text-gray-600">
         <h2 className="text-sm font-semibold text-gray-800">权限与隐私说明</h2>
         <ul className="list-inside list-disc space-y-1">
           <li>storage：保存设置与本地任务数据。</li>
           <li>tabs / activeTab / scripting：打开支持的平台页面并执行受约束的页面操作。</li>
           <li>sidePanel：提供侧边栏主操作界面。</li>
-          <li>仅对小红书、抖音、微信视频号、微信公众号注入脚本。</li>
+          <li>仅对小红书、搜狐号注入脚本。</li>
           <li>不保存平台账号密码，不读取 Cookie，不读取私信与支付信息，不绕过验证码与风控。</li>
         </ul>
       </section>
 
-      {/* 操作 */}
       <div className="flex items-center justify-between">
         <button
           type="button"
@@ -265,7 +251,6 @@ export default function App() {
   );
 }
 
-// 表单行
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">

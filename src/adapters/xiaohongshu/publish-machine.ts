@@ -22,8 +22,6 @@ import {
 import { xhsSelectors } from './selectors';
 import type { XhsPublishState } from './states';
 
-// 小红书发布状态机：对齐 xiaohongshu-mcp 有图路径，并单独校验无素材文字配图路径。
-
 export type XhsPublishMode = 'image_upload' | 'text_image';
 
 export interface XhsPublishContext {
@@ -206,7 +204,6 @@ async function scrollXhsPublishContainersToBottom(): Promise<void> {
   await sleep(500);
 }
 
-/** @deprecated 兼容旧调用，内部转发至 scrollXhsPublishContainersToBottom */
 async function scrollPublishPageToBottom(): Promise<void> {
   await scrollXhsPublishContainersToBottom();
 }
@@ -230,7 +227,7 @@ function buildBodyText(content: GeneratedContent, includeTitle = false, includeH
   return parts.filter(Boolean).join('\n');
 }
 
-/** 参考官方实现：点击空白区域收起引导遮罩 */
+/** 点击空白区域收起引导遮罩 */
 function clickEmptyPosition(): void {
   const x = 380 + Math.floor(Math.random() * 100);
   const y = 20 + Math.floor(Math.random() * 60);
@@ -256,7 +253,7 @@ async function typeCharByChar(el: HTMLElement, text: string, delayMs = 50): Prom
   }
 }
 
-/** 参考官方 inputTags：先按方向键+回车收起编辑器浮层，再逐个输入 #话题 并点选联想项 */
+/** 先按方向键+回车收起编辑器浮层，再逐个输入 #话题 并点选联想项 */
 async function dismissEditorOverlay(contentEl: HTMLElement): Promise<void> {
   contentEl.focus();
   for (let i = 0; i < 20; i++) {
@@ -309,7 +306,7 @@ function clickAtPoint(x: number, y: number, doc: Document = document): void {
   simulateClick(target);
 }
 
-/** closed shadow Host 上可能暴露的发布/存草稿实例方法（对齐 OpenCLI #1606） */
+/** closed shadow Host 上可能暴露的发布/存草稿实例方法 */
 const XHS_PUBLISH_METHOD_NAMES = ['_onPublish', '_onSubmit', 'onPublish', '_handlePublish'];
 const XHS_DRAFT_METHOD_NAMES = ['_onSave', '_onSaveDraft', '_onDraft'];
 
@@ -909,7 +906,7 @@ function scorePublishCandidate(el: HTMLElement): number {
   const text = normalizeText(el.textContent ?? '');
   const tag = el.tagName.toLowerCase();
   let score = 0;
-  // 参考官方实现：新版 xhs-publish-btn 与旧版 .publish-page-publish-btn 是最可靠的发布按钮信号。
+  // 新版 xhs-publish-btn 与旧版 .publish-page-publish-btn 是最可靠的发布按钮信号
   if (tag === 'xhs-publish-btn') score += 120;
   if (el.closest('.publish-page-publish-btn')) score += 100;
   if (el.matches?.('button.ce-btn.bg-red')) score += 95;
@@ -1074,7 +1071,7 @@ export function countXhsUploadedImages(): number {
 }
 
 /**
- * 等待图片上传完成：预览数量达到期望值（参考官方实现 waitForUploadComplete）。
+ * 等待图片上传完成：预览数量达到期望值。
  * @param expectedCount 期望出现的预览数量
  * @param timeout 最长等待时间（毫秒），默认 60 秒
  */
@@ -1092,7 +1089,7 @@ export async function waitForXhsUploadComplete(
 }
 
 /**
- * 移除发布页可能出现的引导/提示遮罩（参考官方实现 removePopCover）。
+ * 移除发布页可能出现的引导/提示遮罩。
  * 这些 d-popover 遮罩会挡住“上传图文”tab 或底部发布按钮，导致点击落空。
  */
 function removePopCover(): void {
@@ -1108,14 +1105,13 @@ function removePopCover(): void {
   clickEmptyPosition();
 }
 
-/** 切换到“上传图文”页签（参考官方 mustClickPublishTab） */
+/** 切换到“上传图文”页签 */
 export async function ensureXhsImageTextTab(): Promise<ActionResult> {
   return clickUploadImageTab();
 }
 
 /**
- * 逐张上传图片（参考官方 uploadImages）。
- * 首张使用 .upload-input，后续使用 input[type="file"]，每张上传后等待预览出现。
+ * 逐张上传图片。首张使用 .upload-input，后续使用 input[type="file"]，每张上传后等待预览出现。
  */
 export async function uploadXhsImagesSequentially(files: File[]): Promise<UploadResult> {
   if (!files.length) {
@@ -1287,7 +1283,7 @@ function ensureXhsPublishPageFrame(): PublishResult | null {
 }
 
 /**
- * 等待发布页就绪：上传组件容器出现，或“上传图文”页签已可见即可（参考官方实现等待 upload-content）。
+ * 等待发布页就绪：上传组件容器出现，或“上传图文”页签已可见即可。
  * 任一条件满足即返回，避免容器选择器缺失时长时间空等。
  */
 async function waitForUploadTabReady(timeout = 10000): Promise<void> {
@@ -1308,7 +1304,6 @@ async function waitForUploadTabReady(timeout = 10000): Promise<void> {
 }
 
 async function clickUploadImageTab(): Promise<ActionResult> {
-  // 参考官方实现：先等待发布页就绪，再移除可能存在的引导遮罩，最后点击“上传图文”页签。
   await waitForUploadTabReady(10000);
   removePopCover();
   const res = await clickByText(['上传图文'], {
@@ -1535,7 +1530,7 @@ function dumpPublishButtonCandidates(): Array<Record<string, unknown>> {
 }
 
 /**
- * 检查标题/正文是否超过平台长度上限（参考官方实现 checkTitleMaxLength / checkContentMaxLength）。
+ * 检查标题/正文是否超过平台长度上限。
  * 小红书在超长时会渲染 div.max_suffix / div.length-error 提示元素，文本形如 "1024/1000"。
  * @returns 超长时返回错误描述，未超长返回 null。
  */
@@ -1611,7 +1606,7 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
     }
   }
 
-  // 参考官方：填写正文后回点标题，增强后续标签输入稳定性
+  // 填写正文后回点标题，增强后续标签输入稳定性
   if (titleEl) {
     simulateClick(titleEl);
     await sleep(500);

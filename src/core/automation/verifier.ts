@@ -2,8 +2,6 @@ import type { ActionResult } from '@/types';
 import { collectDiagnostics, formatDiagnostics } from './diagnostics';
 import { sleep } from '@/utils/dom';
 
-// 交互后验证器：点击后必须验证页面状态变化、Toast、文本、计数或 active 状态。
-
 export interface VerifyOptions {
   timeout?: number;
   interval?: number;

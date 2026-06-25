@@ -14,9 +14,7 @@ import { checkPolicy } from '@/core/executor/policy-guard';
 import { executePlan } from '@/core/executor';
 import { ModelError } from '@/core/model';
 import { platformFromUrl } from '@/adapters/registry';
-
-// Task Manager：任务中枢。接收创建请求，解析计划，做策略校验，调用执行器，
-// 管理暂停/恢复/重试/取消，并把关键状态持久化到 IndexedDB（应对 MV3 回收）。
+import { resolvePlatformTabForTask } from '@/core/storage/platform-session';
 
 /** 运行时任务上下文（内存态，用于暂停恢复） */
 interface RuntimeTask {
@@ -100,7 +98,6 @@ export async function createTask(payload: CreateTaskPayload): Promise<TaskRecord
   const logger = createTaskLogger(id);
   await logger.status('created', '任务已创建');
 
-  // 异步执行，立即返回记录给 Side Panel
   void runTaskPipeline(id, payload, settings, modelConfig);
   return record;
 }
@@ -118,7 +115,9 @@ async function runTaskPipeline(
       payload,
       payload.platform ?? settings.defaultPlatform,
     );
-    // 1. 解析计划
+    const platform = payload.platform ?? settings.defaultPlatform;
+    const sessionTabId = await resolvePlatformTabForTask(platform);
+    const existingTabId = activeTab.tabId ?? sessionTabId;
     await updateTask(id, { status: 'parsing' });
     await logger.status('parsing', '正在调用模型解析任务');
 
@@ -130,7 +129,6 @@ async function runTaskPipeline(
       hasVideos: false,
     });
 
-    // 把素材 id 注入计划
     if (payload.materialIds?.length) {
       plan.materials = plan.materials ?? {};
       if (plan.contentType === 'video') {
@@ -150,7 +148,6 @@ async function runTaskPipeline(
     await logger.status('planning', '执行计划已生成');
     await logger.info('TaskPlan', plan);
 
-    // 2. 策略校验
     const policy = await checkPolicy(plan, settings);
     if (!policy.allowed) {
       await updateTask(id, {
@@ -163,10 +160,9 @@ async function runTaskPipeline(
       return;
     }
 
-    // 3. 执行
     const record = (await getTask(id))!;
-    // 互动任务复用当前活动标签页，避免重新打开/重载页面导致脚本未就绪
-    const rt: RuntimeTask = { record, plan, settings, modelConfig, tabId: activeTab.tabId };
+    // 互动任务复用当前活动标签页；发布任务复用持久化平台标签页，避免每次像新设备登录
+    const rt: RuntimeTask = { record, plan, settings, modelConfig, tabId: existingTabId };
     runtime.set(id, rt);
 
     const result = await executePlan({
@@ -175,7 +171,7 @@ async function runTaskPipeline(
       settings,
       modelConfig,
       logger,
-      existingTabId: activeTab.tabId,
+      existingTabId,
     });
 
     if (result.status === 'waiting_login' || result.status === 'waiting_verification') {

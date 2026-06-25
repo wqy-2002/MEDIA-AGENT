@@ -5,14 +5,7 @@ import { saveMaterials } from '@/utils/materials';
 import { sendToBackground } from '@/core/messaging';
 import type { TaskRecord } from '@/types';
 
-// 任务输入区：自然语言任务、平台选择、目标 URL、素材上传。
-
-const PLATFORMS: PlatformName[] = [
-  'xiaohongshu',
-  'douyin',
-  'wechat_channel',
-  'wechat_official',
-];
+const PLATFORMS: PlatformName[] = ['xiaohongshu', 'sohu'];
 
 interface Props {
   defaultPlatform: PlatformName;

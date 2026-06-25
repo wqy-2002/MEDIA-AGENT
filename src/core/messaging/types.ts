@@ -8,9 +8,6 @@ import type {
 } from '@/types';
 import type { ContentCommand } from '@/adapters/types';
 
-// 扩展内消息类型定义（参见开发文档第 13.2 节）
-// 原则：Background 是任务中枢；Side Panel 不直接操作页面；Content Script 不直接调用模型。
-
 export interface CreateTaskPayload {
   userInput: string;
   platform?: PlatformName;
@@ -43,7 +40,8 @@ export type ExtensionMessage =
   | { type: 'MODEL_TEST'; payload: ModelConfig }
   | { type: 'PLATFORM_CHECK_LOGIN'; payload: { platform: PlatformName } }
   | { type: 'CONTENT_EXECUTE_ACTION'; payload: ExecuteActionPayload }
-  | { type: 'CONTENT_ACTION_RESULT'; payload: ActionResult };
+  | { type: 'CONTENT_ACTION_RESULT'; payload: ActionResult }
+  | { type: 'PING' };
 
 /** 统一的消息响应结构 */
 export interface MessageResponse<T = unknown> {

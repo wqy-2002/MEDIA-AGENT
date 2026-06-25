@@ -4,9 +4,7 @@
 /** 支持的平台名称 */
 export type PlatformName =
   | 'xiaohongshu'
-  | 'douyin'
-  | 'wechat_channel'
-  | 'wechat_official';
+  | 'sohu';
 
 /** 任务类型 */
 export type TaskType = 'publish' | 'comment' | 'like' | 'favorite' | 'follow';
@@ -126,6 +124,10 @@ export interface LoginStatus {
   loggedIn: boolean;
   needVerification?: boolean;
   message?: string;
+  verificationMatch?: string;
+  loginWall?: boolean;
+  onBackend?: boolean;
+  url?: string;
 }
 
 /** 素材文件（在内存中传递时使用 base64 dataUrl，落库时存索引） */

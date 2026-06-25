@@ -1,14 +1,6 @@
 import { z } from 'zod';
 
-// TaskPlan 的 Zod 校验 schema（参见开发文档第 8、9 节）
-// 原则：模型输出必须经过校验，非法计划不能执行。
-
-export const platformNameSchema = z.enum([
-  'xiaohongshu',
-  'douyin',
-  'wechat_channel',
-  'wechat_official',
-]);
+export const platformNameSchema = z.enum(['xiaohongshu', 'sohu']);
 
 export const taskTypeSchema = z.enum([
   'publish',

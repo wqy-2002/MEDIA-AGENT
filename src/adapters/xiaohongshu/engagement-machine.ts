@@ -10,8 +10,6 @@ import { isVisible, simulateClick, sleep } from '@/utils/dom';
 import { xhsSelectors } from './selectors';
 import type { XhsDetailState } from './states';
 
-// 小红书详情页互动状态机：评论、点赞、收藏、关注。
-
 function pageText(): string {
   return document.body.innerText || '';
 }

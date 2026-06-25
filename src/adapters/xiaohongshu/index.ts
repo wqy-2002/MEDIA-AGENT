@@ -37,14 +37,10 @@ import {
 } from './engagement-machine';
 import { collectDiagnostics } from '@/core/automation/diagnostics';
 
-// 小红书适配器：实现图文/视频发布、评论、点赞、收藏、关注（开发文档 Phase 3）。
-// 运行在 Content Script，对页面 DOM 进行受约束的自动化操作。
-
 /** 当前页面是否处于"未登录/登录墙"状态 */
 function isOnLoginWall(): boolean {
   const url = location.href.toLowerCase();
   if (xhsSelectors.loginUrlKeywords.some((k) => url.includes(k))) return true;
-  // 登录墙/扫码弹层这类元素只在未登录时出现，按"是否存在"判断即可
   return Boolean(queryFirst(xhsSelectors.loginWallFlags));
 }
 
@@ -232,10 +228,7 @@ export const xiaohongshuAdapter: PlatformAdapter = {
   platform: 'xiaohongshu',
 
   async detectLoginStatus(): Promise<LoginStatus> {
-    // 健壮的登录判定策略（避免"已登录却被误判未登录"）：
-    // 1) 若出现明确的登录墙（登录页 URL / 扫码登录弹层）→ 未登录；
-    // 2) 否则默认视为已登录并继续，把不确定性交给后续具体操作，
-    //    这样不会因为头像选择器失配而错误阻塞用户。
+    // 有明确登录墙则未登录；否则默认已登录，避免头像选择器失配误阻塞
     if (isOnLoginWall()) {
       return {
         platform: 'xiaohongshu',
@@ -304,17 +297,13 @@ export const xiaohongshuAdapter: PlatformAdapter = {
   },
 
   async ensurePublishPage(): Promise<ActionResult> {
-    // 发布页需要先确保选中"上传图文"tab，再确认上传组件存在
     const tab =
       findByText('div,span,button', '上传图文') ?? findByText('div,span,button', '图文');
     if (tab) {
       simulateClick(tab);
       await sleep(800);
     }
-    // 小红书发布页可能处于两种状态：
-    // 1. 入口态：只显示“上传图片 / 文字配图”；
-    // 2. 编辑态：标题框 / 正文编辑器已经出现。
-    // 二者都说明页面可用，具体进入哪种编辑态由 uploadMedia/fillContent 决定。
+    // 入口态（上传图片/文字配图）与编辑态（标题/正文已出现）均视为可用
     if (
       hasPublishEditor() ||
       findByText('button,div[role="button"],span', '上传图片') ||
@@ -322,7 +311,6 @@ export const xiaohongshuAdapter: PlatformAdapter = {
     ) {
       return { success: true, message: '已进入发布页' };
     }
-    // 文件上传 input 通常是隐藏的，查找时不要求可见；若存在也说明发布页可用
     const fileInput = await waitForElement(xhsSelectors.fileInput, {
       timeout: 10000,
       visible: false,
@@ -353,7 +341,6 @@ export const xiaohongshuAdapter: PlatformAdapter = {
           message: '素材数据为空，无法上传。请重新选择图片或视频素材。',
         };
       }
-      // 对齐 xiaohongshu-mcp：切换图文页签后逐张上传并等待预览
       return uploadXhsImagesSequentially(fileObjs);
     } catch (err) {
       return {
@@ -377,40 +364,6 @@ export const xiaohongshuAdapter: PlatformAdapter = {
 
   async submitPublish(): Promise<PublishResult> {
     return runXhsSubmitPublishFlow();
-    /*
-    // 等待所有内容生成/填写完成，并滚动内部容器让底部发布按钮进入可点击状态
-    const btn = await waitForPublishReady(60000);
-    if (!btn) {
-      return {
-        success: false,
-        errorCode: 'BUTTON_NOT_FOUND',
-        message: `等待发布就绪超时：未找到可点击的发布按钮，或页面仍在生成/上传中。\n${describePageCandidates()}`,
-      };
-    }
-    btn.scrollIntoView({ block: 'center', inline: 'center' });
-    await sleep(300);
-    simulateClick(btn);
-
-    // 小红书有时没有明确成功页，只出现 Toast 或跳转到管理页/笔记页。
-    const start = Date.now();
-    while (Date.now() - start < 45000) {
-      if (
-        document.body.innerText.includes('发布成功') ||
-        document.body.innerText.includes('已发布') ||
-        document.body.innerText.includes('发布审核中') ||
-        document.body.innerText.includes('笔记管理') && !findPublishButton()
-      ) {
-        return { success: true, resultUrl: location.href, message: '发布已提交' };
-      }
-      const success = queryFirst<HTMLElement>(xhsSelectors.publishSuccessFlags);
-      if (success) return { success: true, resultUrl: location.href, message: '发布成功' };
-      await sleep(1000);
-    }
-
-    // 已经成功点击可用的“发布”按钮，但平台未给出稳定成功标志。
-    // 这里按“已提交”返回成功，后续日志保留当前 URL 供人工核验，避免误报失败。
-    return { success: true, resultUrl: location.href, message: '已点击发布，未检测到失败提示，按已提交处理' };
-    */
   },
 
   async readPageContent(): Promise<PageContent> {
@@ -423,89 +376,18 @@ export const xiaohongshuAdapter: PlatformAdapter = {
 
   async executeComment(comment: string): Promise<ActionResult> {
     return runXhsCommentFlow(comment);
-    /*
-    const input = await waitForElement<HTMLElement>(xhsSelectors.commentInput, {
-      timeout: 8000,
-    });
-    if (!input) {
-      return {
-        success: false,
-        errorCode: 'INPUT_FIELD_NOT_FOUND',
-        message: `未找到评论输入框。\n${describePageCandidates()}`,
-      };
-    }
-    simulateClick(input);
-    await sleep(400);
-    if (input instanceof HTMLTextAreaElement) {
-      setNativeValue(input, comment);
-    } else {
-      setContentEditable(input, comment);
-    }
-    await sleep(600);
-    const submit =
-      findByText('button', '发送') ??
-      queryFirst<HTMLElement>(xhsSelectors.commentSubmit, { visible: true });
-    if (!submit) {
-      return {
-        success: false,
-        errorCode: 'BUTTON_NOT_FOUND',
-        message: `未找到评论提交按钮。\n${describePageCandidates()}`,
-      };
-    }
-    simulateClick(submit);
-    await sleep(1000);
-    return { success: true, message: '评论已提交' };
-    */
   },
 
   async executeLike(): Promise<ActionResult> {
     return runXhsLikeFlow();
-    /*
-    const btn = queryFirst<HTMLElement>(xhsSelectors.likeButton);
-    if (!btn)
-      return {
-        success: false,
-        errorCode: 'BUTTON_NOT_FOUND',
-        message: `未找到点赞按钮。\n${describePageCandidates()}`,
-      };
-    simulateClick(btn);
-    await sleep(600);
-    return { success: true, message: '已点赞' };
-    */
   },
 
   async executeFavorite(): Promise<ActionResult> {
     return runXhsFavoriteFlow();
-    /*
-    const btn = queryFirst<HTMLElement>(xhsSelectors.favoriteButton);
-    if (!btn)
-      return {
-        success: false,
-        errorCode: 'BUTTON_NOT_FOUND',
-        message: `未找到收藏按钮。\n${describePageCandidates()}`,
-      };
-    simulateClick(btn);
-    await sleep(600);
-    return { success: true, message: '已收藏' };
-    */
   },
 
   async executeFollow(): Promise<ActionResult> {
     return runXhsFollowFlow();
-    /*
-    const btn =
-      findByText('button,div[role="button"]', '关注') ??
-      queryFirst<HTMLElement>(xhsSelectors.followButton, { visible: true });
-    if (!btn)
-      return {
-        success: false,
-        errorCode: 'BUTTON_NOT_FOUND',
-        message: `未找到关注按钮。\n${describePageCandidates()}`,
-      };
-    simulateClick(btn);
-    await sleep(600);
-    return { success: true, message: '已关注' };
-    */
   },
 
   async captureResult(): Promise<ResultEvidence> {

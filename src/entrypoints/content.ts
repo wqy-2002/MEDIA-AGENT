@@ -10,25 +10,18 @@ import {
   scanXhsPublishButtons,
   verifyXhsPublishSuccess,
 } from '@/adapters/xiaohongshu/publish-machine';
-
-// Content Script：页面执行层（参见开发文档第 7.4 节）。
-// 只负责页面读取、填写、点击、上传等 DOM 操作；不调用模型，不直接控制 tab。
-// 接收 Background 下发的 ContentCommand，调用对应平台 Adapter 执行。
-
-/** about:blank 子 frame 不处理消息，避免抢答主 frame（配合 sendToTab frameId:0） */
-function isBlankSubFrame(): boolean {
-  return location.href === 'about:blank' || location.protocol === 'about:';
-}
+import { verifySohuPublishSuccess } from '@/adapters/sohu/publish';
+import { shouldIgnoreContentMessage, getTopFrameHostname } from '@/adapters/sohu/content-frame';
 
 export default defineContentScript({
   matches: [
     '*://*.xiaohongshu.com/*',
-    '*://*.douyin.com/*',
-    '*://mp.weixin.qq.com/*',
-    '*://channels.weixin.qq.com/*',
+    '*://*.sohu.com/*',
+    '*://mp.sohu.com/*',
   ],
   allFrames: true,
   matchAboutBlank: true,
+  runAt: 'document_start',
   main() {
     chrome.runtime.onMessage.addListener(
       (
@@ -36,10 +29,8 @@ export default defineContentScript({
         _sender,
         sendResponse: (res: MessageResponse<ActionResult>) => void,
       ) => {
-        // 空白子 frame 不消费消息，让主 frame 响应
-        if (isBlankSubFrame()) return false;
+        if (shouldIgnoreContentMessage()) return false;
 
-        // 就绪探测
         if (message.type === 'PING') {
           sendResponse({ ok: true, data: { success: true } });
           return true;
@@ -54,13 +45,17 @@ export default defineContentScript({
                 errorMessage: err instanceof Error ? err.message : String(err),
               }),
             );
-          return true; // 异步响应
+          return true;
         }
         return false;
       },
     );
 
-    console.info('[MediaFlow] Content Script 已注入:', location.host);
+    console.info('[MediaFlow] Content Script 已注入:', {
+      host: location.host,
+      href: location.href,
+      topHost: getTopFrameHostname(),
+    });
   },
 });
 
@@ -216,6 +211,19 @@ async function executeCommand(
     case 'verify_result': {
       if (args.expectPublishSuccess && adapter.platform === 'xiaohongshu') {
         const verified = await verifyXhsPublishSuccess(15000);
+        const evidence = await adapter.captureResult();
+        if (!verified.success) {
+          return {
+            success: false,
+            errorCode: 'SUBMIT_FAILED',
+            message: `发布结果校验失败：${verified.message ?? '未检测到成功提示'}`,
+            data: evidence,
+          };
+        }
+        return { success: true, data: evidence, message: '发布结果校验通过' };
+      }
+      if (args.expectPublishSuccess && adapter.platform === 'sohu') {
+        const verified = await verifySohuPublishSuccess(15000);
         const evidence = await adapter.captureResult();
         if (!verified.success) {
           return {

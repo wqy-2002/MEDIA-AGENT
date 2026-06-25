@@ -3,7 +3,6 @@ import { StatusBadge } from './StatusBadge';
 import { PLATFORM_LABELS } from '@/adapters/registry';
 import { TASK_TYPE_LABELS } from '@/utils/labels';
 
-// 历史任务列表
 interface Props {
   tasks: TaskRecord[];
   currentTaskId?: string;

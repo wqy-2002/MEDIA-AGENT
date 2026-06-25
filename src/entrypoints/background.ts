@@ -12,14 +12,11 @@ import {
 } from '@/core/task-manager';
 import { testModelConnection } from '@/core/model';
 import { getAdapter, getPlatformUrls } from '@/adapters/registry';
-
-// Background Service Worker：任务中枢（参见开发文档第 7.3 节）。
-// 职责：接收 Side Panel 创建的任务、调用模型、生成计划、管理 tabs、
-// 分发任务、接收结果、更新状态、保存日志、处理暂停/恢复/重试/取消。
-// 注意：MV3 SW 可能被回收，关键状态写入 IndexedDB / chrome.storage。
+import { initPlatformSessionListeners } from '@/core/storage/platform-session';
+import { openTab } from '@/core/executor/tab-manager';
 
 export default defineBackground(() => {
-  // 点击插件图标打开 Side Panel
+  initPlatformSessionListeners();
   chrome.sidePanel
     ?.setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err) => console.warn('[MediaFlow] 设置 sidePanel 行为失败', err));
@@ -33,7 +30,6 @@ export default defineBackground(() => {
           errorMessage: err instanceof Error ? err.message : String(err),
         } satisfies MessageResponse),
       );
-    // 返回 true 表示异步响应
     return true;
   });
 
@@ -77,13 +73,13 @@ async function handleMessage(message: ExtensionMessage): Promise<MessageResponse
     }
 
     case 'PLATFORM_CHECK_LOGIN': {
-      // 打开平台主页并检测登录态
+      // 复用已登录的平台标签页，避免每次检测都打开新 tab
       const platform = message.payload.platform;
       const adapter = getAdapter(platform);
       if (!adapter) return { ok: false, errorMessage: '不支持的平台' };
       const { homeUrl } = getPlatformUrls(platform);
-      const tab = await chrome.tabs.create({ url: homeUrl, active: true });
-      return { ok: true, data: { tabId: tab.id } };
+      const tabId = await openTab(homeUrl, { platform });
+      return { ok: true, data: { tabId } };
     }
 
     default:

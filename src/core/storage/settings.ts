@@ -1,8 +1,5 @@
 import type { AppSettings, ModelConfig, PlatformName } from '@/types';
 
-// 设置存储：保存在 chrome.storage.local（参见开发文档第 12.1 节）
-// 内容包括 API Key、Base URL、默认模型、平台开关、自动化开关、用户偏好、频率限制。
-
 const SETTINGS_KEY = 'mediaflow_settings';
 
 /** 默认设置 */
@@ -27,11 +24,26 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   platformSwitch: {
     xiaohongshu: true,
-    douyin: true,
-    wechat_channel: true,
-    wechat_official: true,
+    sohu: true,
   },
 };
+
+const SUPPORTED_PLATFORMS: PlatformName[] = ['xiaohongshu', 'sohu'];
+
+function normalizePlatform(value: unknown): PlatformName {
+  return SUPPORTED_PLATFORMS.includes(value as PlatformName)
+    ? (value as PlatformName)
+    : DEFAULT_SETTINGS.defaultPlatform;
+}
+
+function normalizePlatformSwitch(
+  stored: Partial<Record<string, boolean>> | undefined,
+): Record<PlatformName, boolean> {
+  return {
+    xiaohongshu: stored?.xiaohongshu ?? DEFAULT_SETTINGS.platformSwitch.xiaohongshu,
+    sohu: stored?.sohu ?? DEFAULT_SETTINGS.platformSwitch.sohu,
+  };
+}
 
 /** 深合并默认值，保证新增字段有兜底 */
 function mergeSettings(stored: Partial<AppSettings> | undefined): AppSettings {
@@ -39,12 +51,10 @@ function mergeSettings(stored: Partial<AppSettings> | undefined): AppSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
+    defaultPlatform: normalizePlatform(stored.defaultPlatform),
     automation: { ...DEFAULT_SETTINGS.automation, ...stored.automation },
     rateLimit: { ...DEFAULT_SETTINGS.rateLimit, ...stored.rateLimit },
-    platformSwitch: {
-      ...DEFAULT_SETTINGS.platformSwitch,
-      ...stored.platformSwitch,
-    } as Record<PlatformName, boolean>,
+    platformSwitch: normalizePlatformSwitch(stored.platformSwitch),
   };
 }
 

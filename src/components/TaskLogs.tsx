@@ -5,8 +5,6 @@ import { PLATFORM_LABELS } from '@/adapters/registry';
 import { TASK_TYPE_LABELS, isWaiting } from '@/utils/labels';
 import { sendToBackground } from '@/core/messaging';
 
-// 当前任务详情：计划、实时日志、暂停时的「继续」操作。
-
 interface Props {
   task?: TaskRecord;
   logs: LogEntry[];

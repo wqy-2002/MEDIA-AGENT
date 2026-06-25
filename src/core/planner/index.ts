@@ -14,9 +14,6 @@ import {
   buildContentUserPrompt,
 } from '@/prompts';
 
-// Task Planner：把自然语言解析为 TaskPlan，并做内容生成。
-// 所有模型输出必须经过 Zod 校验，失败重试。
-
 const MAX_RETRY = 2;
 
 /**

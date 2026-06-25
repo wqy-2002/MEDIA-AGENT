@@ -33,18 +33,25 @@ vi.mock('@/core/model', () => ({
   locatePointInScreenshot: (...a: unknown[]) => locatePointInScreenshot(...a),
 }));
 
-const openTab = vi.fn(async () => 1);
-const navigateTab = vi.fn(async () => undefined);
-const reloadTab = vi.fn(async () => undefined);
-const waitForContentReady = vi.fn(async () => true);
-const captureTab = vi.fn(async () => 'data:image/png;base64,AAAA');
-vi.mock('@/core/executor/tab-manager', () => ({
-  openTab: () => openTab(),
-  navigateTab: () => navigateTab(),
-  reloadTab: () => reloadTab(),
-  waitForContentReady: () => waitForContentReady(),
-  captureTab: () => captureTab(),
+const tabManagerMocks = vi.hoisted(() => ({
+  openTab: vi.fn(async () => 1),
+  navigateTab: vi.fn(async () => undefined),
+  reloadTab: vi.fn(async () => undefined),
+  waitForContentReady: vi.fn(async () => ({ ready: true, frameId: 0 })),
+  scanReadyFrame: vi.fn(async () => ({ ready: true, frameId: 456 })),
+  pingFrame: vi.fn(async () => true),
+  captureTab: vi.fn(async () => 'data:image/png;base64,AAAA'),
 }));
+const {
+  openTab,
+  navigateTab,
+  reloadTab,
+  waitForContentReady,
+  scanReadyFrame,
+  pingFrame,
+  captureTab,
+} = tabManagerMocks;
+vi.mock('@/core/executor/tab-manager', () => tabManagerMocks);
 
 // 模拟 content script 的响应：根据命令返回结果
 type TabReply = { ok: boolean; data?: unknown; errorMessage?: string };
@@ -186,7 +193,11 @@ describe('executePlan', () => {
   });
 
   it('页面脚本未就绪时应刷新页面并重试', async () => {
-    waitForContentReady.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    waitForContentReady
+      .mockResolvedValueOnce({ ready: false, frameUrls: [] } as unknown as Awaited<
+        ReturnType<typeof waitForContentReady>
+      >)
+      .mockResolvedValueOnce({ ready: true, frameId: 0 });
     const plan: TaskPlan = {
       taskType: 'like',
       platform: 'xiaohongshu',
@@ -370,6 +381,75 @@ describe('executePlan', () => {
     expect(locatePointInScreenshot).toHaveBeenCalled();
     expect(sentCommands).toEqual(['submit_publish']);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('发布按钮就绪后丢失'));
+  });
+
+  it('搜狐 check_login PING 成功时不应 reload', async () => {
+    scanReadyFrame.mockResolvedValueOnce({ ready: true, frameId: 456 });
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'sohu',
+      contentType: 'article',
+      actions: ['check_login'],
+    };
+    const logger = makeLogger();
+    await executePlan({
+      record: { ...makeRecord(), platform: 'sohu', taskType: 'publish' },
+      plan,
+      settings,
+      modelConfig,
+      logger,
+    });
+    expect(reloadTab).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      '搜狐登录探测完成',
+      expect.objectContaining({ loggedIn: true, frameId: 456 }),
+    );
+  });
+
+  it('搜狐 check_login 后 open_publish_page 应跳过重复 dashboard', async () => {
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'sohu',
+      contentType: 'article',
+      actions: ['check_login', 'open_publish_page'],
+    };
+    const logger = makeLogger();
+    await executePlan({
+      record: { ...makeRecord(), platform: 'sohu', taskType: 'publish' },
+      plan,
+      settings,
+      modelConfig,
+      logger,
+    });
+    expect(logger.info).toHaveBeenCalledWith('登录已在 check_login 验证，跳过重复打开 dashboard');
+    expect(navigateTab).toHaveBeenCalledWith(
+      1,
+      'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
+    );
+  });
+
+  it('搜狐发布应两段式导航：列表页 → 编辑器', async () => {
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'sohu',
+      contentType: 'article',
+      actions: ['open_publish_page'],
+    };
+    const logger = makeLogger();
+    await executePlan({
+      record: { ...makeRecord(), platform: 'sohu', taskType: 'publish' },
+      plan,
+      settings,
+      modelConfig,
+      logger,
+    });
+
+    expect(openTab).toHaveBeenCalled();
+    expect(navigateTab).toHaveBeenCalledWith(
+      1,
+      'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
+    );
+    expect(sentCommands).toContain('ensure_publish_page');
   });
 
   it('发布按钮为 disabled 时不应进入视觉兜底', async () => {

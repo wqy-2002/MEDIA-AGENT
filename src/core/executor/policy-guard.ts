@@ -1,9 +1,6 @@
 import type { AppSettings, TaskPlan } from '@/types';
 import { countTodayByType } from '@/core/storage/db';
 
-// Policy Guard：安全与风控底线（参见开发文档第 8、18 节）。
-// 在执行前对任务计划做合规检查：自动化开关、单日频率限制等。
-
 export interface PolicyResult {
   allowed: boolean;
   reason?: string;

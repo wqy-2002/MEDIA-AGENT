@@ -1,7 +1,3 @@
-// DOM 操作工具（仅在 Content Script 中使用）。
-// 提供等待元素、设置原生输入值、模拟点击、文件注入等通用能力，
-// 供各平台 Adapter 复用，避免重复实现。
-
 /** 延时 */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,7 +115,7 @@ export function getEditableText(el: HTMLElement): string {
 }
 
 /**
- * 向 contenteditable 元素输入文本（小红书/抖音正文常用富文本编辑器）。
+ * 向 contenteditable 元素输入文本（小红书等正文常用富文本编辑器）。
  */
 export function setContentEditable(el: HTMLElement, text: string): void {
   el.focus();
@@ -157,6 +153,51 @@ export async function fillRichTextEditor(el: HTMLElement, text: string): Promise
     if (containsProbe(getEditableText(el))) return;
   } catch {
     // 部分环境不支持构造 ClipboardEvent，继续走后续策略。
+  }
+
+  setContentEditable(el, text);
+  await sleep(120);
+  if (containsProbe(getEditableText(el))) return;
+
+  for (const char of text) {
+    try {
+      document.execCommand('insertText', false, char);
+    } catch {
+      el.textContent = (el.textContent ?? '') + char;
+    }
+    await sleep(8);
+  }
+}
+
+/** Quill 编辑器填写：优先 paste 事件，回退 execCommand */
+export async function fillQuillEditor(el: HTMLElement, text: string): Promise<void> {
+  el.focus();
+  await sleep(80);
+
+  const probe = text.trim().slice(0, Math.min(12, text.trim().length));
+  const containsProbe = (value: string) => Boolean(probe && value.includes(probe));
+
+  try {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  } catch {
+    // 选区失败时继续尝试粘贴
+  }
+
+  try {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    dt.setData('text/html', `<p>${text.replace(/\n/g, '</p><p>')}</p>`);
+    el.dispatchEvent(
+      new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }),
+    );
+    await sleep(150);
+    if (containsProbe(getEditableText(el))) return;
+  } catch {
+    // 部分环境不支持 ClipboardEvent
   }
 
   setContentEditable(el, text);

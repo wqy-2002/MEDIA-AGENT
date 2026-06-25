@@ -2,8 +2,6 @@ import { create } from 'zustand';
 import type { LogEntry, TaskRecord } from '@/types';
 import { listTasks, listLogs } from '@/core/storage/db';
 
-// 任务状态管理（Zustand）：Side Panel 用于展示当前任务、历史与实时日志。
-
 interface TaskState {
   tasks: TaskRecord[];
   currentTaskId?: string;

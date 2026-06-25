@@ -1,8 +1,5 @@
 import type { ModelConfig } from '@/types';
 
-// 模型服务：调用 OpenAI 兼容接口（DeepSeek / OpenAI-Compatible）。
-// 仅负责"理解任务"和"生成内容"，不直接控制浏览器。
-
 export class ModelError extends Error {
   constructor(
     public code:
@@ -176,15 +173,12 @@ export async function locatePointInScreenshot(
  */
 export function extractJson<T = unknown>(text: string): T {
   const trimmed = text.trim();
-  // 去掉 markdown 代码块围栏
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1].trim() : trimmed;
 
-  // 直接尝试解析
   try {
     return JSON.parse(candidate) as T;
   } catch {
-    // 退而求其次：截取第一个 { 到最后一个 }
     const start = candidate.indexOf('{');
     const end = candidate.lastIndexOf('}');
     if (start !== -1 && end !== -1 && end > start) {

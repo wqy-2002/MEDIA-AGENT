@@ -1,7 +1,5 @@
 import type { ExtensionMessage, MessageResponse, TaskStatusPayload } from './types';
 
-// 消息通信工具：封装 chrome.runtime / chrome.tabs 的发送与监听，统一类型。
-
 /** 向 Background 发送消息并等待响应 */
 export async function sendToBackground<T = unknown>(
   message: ExtensionMessage,

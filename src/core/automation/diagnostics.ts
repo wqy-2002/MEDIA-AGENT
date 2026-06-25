@@ -1,8 +1,6 @@
 import type { AutomationDiagnostics, ElementCandidate } from '@/types';
 import { deepQueryAll, isVisible } from '@/utils/dom';
 
-// 自动化诊断：失败时输出真实 DOM 候选、滚动容器、弹窗/Toast 与阻塞原因。
-
 function cleanText(text: string | null | undefined, limit = 80): string | undefined {
   const value = (text ?? '').replace(/\s+/g, ' ').trim();
   if (!value) return undefined;

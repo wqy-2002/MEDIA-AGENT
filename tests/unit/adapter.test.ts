@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { xiaohongshuAdapter } from '@/adapters/xiaohongshu';
-import { douyinAdapter } from '@/adapters/douyin';
 import { platformFromUrl } from '@/adapters/registry';
 import {
   setNativeValue,
@@ -40,9 +39,7 @@ beforeEach(() => {
 describe('platformFromUrl', () => {
   it('应根据 URL 识别平台', () => {
     expect(platformFromUrl('https://www.xiaohongshu.com/explore')).toBe('xiaohongshu');
-    expect(platformFromUrl('https://creator.douyin.com/x')).toBe('douyin');
-    expect(platformFromUrl('https://channels.weixin.qq.com/x')).toBe('wechat_channel');
-    expect(platformFromUrl('https://mp.weixin.qq.com/x')).toBe('wechat_official');
+    expect(platformFromUrl('https://mp.sohu.com/mpfe/v4/contentManagement/first/page')).toBe('sohu');
     expect(platformFromUrl('https://example.com')).toBeUndefined();
   });
 });
@@ -125,14 +122,6 @@ describe('xiaohongshuAdapter 互动动作', () => {
     const res = await xiaohongshuAdapter.executeFollow();
     expect(res.success).toBe(false);
     expect(res.errorCode).toBe('BUTTON_NOT_FOUND');
-  });
-});
-
-describe('douyinAdapter', () => {
-  it('收藏在 MVP 不支持', async () => {
-    const res = await douyinAdapter.executeFavorite();
-    expect(res.success).toBe(false);
-    expect(res.errorCode).toBe('UNSUPPORTED_PLATFORM');
   });
 });
 

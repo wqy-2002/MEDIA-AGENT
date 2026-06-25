@@ -16,10 +16,18 @@ import { generateContent } from '@/core/planner';
 import { locatePointInScreenshot } from '@/core/model';
 import { getPlatformUrls, PLATFORM_LABELS } from '@/adapters/registry';
 import { sendToTab } from '@/core/messaging';
-import { openTab, navigateTab, reloadTab, waitForContentReady, captureTab } from './tab-manager';
-
-// Task Executor：按 TaskPlan 顺序执行受约束的动作链路（参见开发文档第 8 节）。
-// 真实执行由此处协调：Background 控制 tab 与模型，Content Script 执行 DOM 动作。
+import { isSohuBackendUrl } from '@/adapters/sohu/readiness';
+import { bindPlatformSessionTab } from '@/core/storage/platform-session';
+import {
+  openTab,
+  navigateTab,
+  reloadTab,
+  waitForContentReady,
+  pingFrame,
+  captureTab,
+  scanReadyFrame,
+} from './tab-manager';
+import type { ContentReadyResult, WaitForContentReadyOptions } from './tab-manager';
 
 /** 执行上下文：在单次任务执行过程中传递的共享状态 */
 interface ExecContext {
@@ -30,11 +38,17 @@ interface ExecContext {
   logger: LoggerLike;
   tabId?: number;
   windowId?: number;
+  /** Content Script 就绪的目标 frame（微前端/iframe 场景） */
+  contentFrameId?: number;
+  /** navigate/reload 后需重新扫描 frame */
+  contentFrameInvalidated?: boolean;
   content?: GeneratedContent;
   filledContent?: boolean;
   materials: MediaFile[];
   /** 发布任务是否已成功提交（用于 verify_result 校验） */
   publishSubmitted?: boolean;
+  /** 搜狐 check_login 已通过，open_publish_page 可跳过 dashboard */
+  sohuLoginVerified?: boolean;
 }
 
 /** 只保留用户明确要求的话题，避免模型默认话题触发平台候选层 */
@@ -251,6 +265,176 @@ async function setStatus(ctx: ExecContext, status: TaskStatus, message: string):
   await ctx.logger.status(status, message);
 }
 
+function getInitialOpenUrl(plan: TaskPlan): string {
+  const urls = getPlatformUrls(plan.platform);
+  if (plan.platform === 'sohu' && plan.taskType === 'publish' && urls.dashboardUrl) {
+    return urls.dashboardUrl;
+  }
+  return urls.publishUrl;
+}
+
+function formatPingDiagnostics(result: ContentReadyResult, tabUrl?: string): string {
+  const lines = [`tabUrl=${tabUrl ?? 'unknown'}`];
+  if (result.frameUrls?.length) {
+    lines.push(`frames=${result.frameUrls.join(' | ')}`);
+  }
+  for (const item of result.pingResults ?? []) {
+    lines.push(
+      `frame ${item.frameId} (${item.url || 'empty'}): ${item.ok ? 'PING ok' : `fail ${item.error ?? ''}`}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function invalidateContentFrame(ctx: ExecContext): void {
+  ctx.contentFrameInvalidated = true;
+}
+
+function defaultResolveOpts(ctx: ExecContext): WaitForContentReadyOptions {
+  if (ctx.plan.platform === 'sohu') {
+    return { platform: 'sohu', preferEditorFrame: true, retries: 45 };
+  }
+  return { platform: ctx.plan.platform };
+}
+
+function resolveOptsForCommand(ctx: ExecContext, command: ContentCommand): WaitForContentReadyOptions {
+  if (ctx.plan.platform === 'sohu' && command === 'check_login') {
+    return {
+      platform: 'sohu',
+      preferEditorFrame: false,
+      preferLoggedInFrame: true,
+      retries: 12,
+    };
+  }
+  return defaultResolveOpts(ctx);
+}
+
+/** 搜狐首次打开：PING 成功则跳过 reload，失败才刷新 */
+async function ensureSohuScriptOrReload(ctx: ExecContext): Promise<void> {
+  if (ctx.tabId == null) return;
+  const result = await scanReadyFrame(ctx.tabId, { platform: 'sohu', preferEditorFrame: false });
+  if (result.ready) {
+    ctx.contentFrameId = result.frameId ?? 0;
+    ctx.contentFrameInvalidated = false;
+    return;
+  }
+  await ctx.logger.info('搜狐页面脚本未响应 PING，刷新页面后重试');
+  await reloadTab(ctx.tabId);
+  invalidateContentFrame(ctx);
+}
+
+/** 等待 Content Script 就绪并记录目标 frameId */
+async function resolveContentFrame(
+  ctx: ExecContext,
+  allowReload = true,
+  force = false,
+  opts?: WaitForContentReadyOptions,
+): Promise<void> {
+  if (ctx.tabId == null) {
+    throw new ExecError('PLATFORM_PAGE_CHANGED', '尚未打开目标页面');
+  }
+
+  if (!force && ctx.contentFrameId != null && !ctx.contentFrameInvalidated) {
+    const stillAlive = await pingFrame(ctx.tabId, ctx.contentFrameId);
+    if (stillAlive) return;
+    invalidateContentFrame(ctx);
+  }
+
+  const waitOpts = opts ?? defaultResolveOpts(ctx);
+  let result = await waitForContentReady(ctx.tabId, waitOpts);
+  if (!result.ready && allowReload) {
+    await ctx.logger.warn('页面脚本未就绪，刷新目标页面后重试', {
+      frameUrls: result.frameUrls,
+      pingResults: result.pingResults,
+    });
+    await reloadTab(ctx.tabId);
+    invalidateContentFrame(ctx);
+    result = await waitForContentReady(ctx.tabId, {
+      ...waitOpts,
+      retries: ctx.plan.platform === 'sohu' ? 20 : 10,
+    });
+  }
+  if (!result.ready) {
+    const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+    const detail = formatPingDiagnostics(result, tab?.url);
+    throw new ExecError(
+      'PLATFORM_PAGE_CHANGED',
+      `页面脚本未就绪，可能不是受支持的平台页面\n${detail}`,
+    );
+  }
+  ctx.contentFrameId = result.frameId ?? 0;
+  ctx.contentFrameInvalidated = false;
+  const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+  await ctx.logger.info(`frameId=${ctx.contentFrameId} PING 成功`, {
+    tabUrl: tab?.url,
+    frameUrls: result.frameUrls,
+  });
+}
+
+/** 搜狐两段式导航：列表页验证登录 → 编辑器 deep link */
+async function openSohuPublishPage(ctx: ExecContext): Promise<void> {
+  const urls = getPlatformUrls('sohu');
+  const dashUrl = urls.dashboardUrl ?? urls.homeUrl;
+
+  if (!ctx.sohuLoginVerified) {
+    await setStatus(ctx, 'opening_page', '打开搜狐号内容管理页');
+    await openTargetUrl(ctx, dashUrl);
+    await resolveContentFrame(ctx, true, false, {
+      platform: 'sohu',
+      preferEditorFrame: false,
+      retries: 12,
+    });
+
+    const tab = await chrome.tabs.get(ctx.tabId!);
+    if (tab.url && /passport|login/i.test(tab.url)) {
+      throw new PauseSignal(
+        'waiting_login',
+        `未登录 ${PLATFORM_LABELS.sohu}，请在打开的页面完成登录后点击「继续」`,
+      );
+    }
+  } else {
+    await ctx.logger.info('登录已在 check_login 验证，跳过重复打开 dashboard');
+    if (ctx.tabId == null) {
+      await openTargetUrl(ctx, dashUrl);
+    }
+  }
+
+  await ctx.logger.info(`导航至搜狐发文页: ${urls.publishUrl}`);
+  await navigateTab(ctx.tabId!, urls.publishUrl);
+  invalidateContentFrame(ctx);
+  await resolveContentFrame(ctx, true, false, {
+    platform: 'sohu',
+    preferEditorFrame: true,
+    retries: 45,
+  });
+
+  let res = await runContentCommand(ctx, 'ensure_publish_page', {
+    skipEnsureTab: true,
+    skipResolve: true,
+  }).catch(() => ({ success: false }) as ActionResult);
+
+  if (!res.success && urls.publishUrlAlt) {
+    await ctx.logger.warn('主发文 URL 未就绪，尝试备用链接', { alt: urls.publishUrlAlt });
+    await navigateTab(ctx.tabId!, urls.publishUrlAlt);
+    invalidateContentFrame(ctx);
+    await resolveContentFrame(ctx, true, false, {
+      platform: 'sohu',
+      preferEditorFrame: true,
+      retries: 45,
+    });
+    res = await runContentCommand(ctx, 'ensure_publish_page', {
+      skipEnsureTab: true,
+      skipResolve: true,
+    }).catch(() => ({ success: false }) as ActionResult);
+  }
+
+  if (res.success) {
+    await ctx.logger.info(res.message ?? '已进入搜狐号发文编辑页');
+  } else {
+    await ctx.logger.warn('未确认发布页组件，继续尝试后续步骤', res);
+  }
+}
+
 function needsTargetPage(plan: TaskPlan): boolean {
   return (
     plan.taskType === 'comment' ||
@@ -270,14 +454,26 @@ function needsTargetPage(plan: TaskPlan): boolean {
  * - 其余（发布类）：打开该平台发布页。
  */
 async function ensureTabOpen(ctx: ExecContext): Promise<void> {
-  if (ctx.tabId != null) return;
+  if (ctx.tabId != null) {
+    if (ctx.plan.platform === 'sohu' && ctx.plan.taskType === 'publish') {
+      try {
+        const tab = await chrome.tabs.get(ctx.tabId);
+        if (tab.url && isSohuBackendUrl(tab.url) && !/passport/i.test(tab.url)) {
+          return;
+        }
+      } catch {
+        // tab 可能已关闭，继续走打开逻辑
+      }
+    }
+    return;
+  }
   if (needsTargetPage(ctx.plan) && !ctx.plan.targetUrl) {
     throw new ExecError(
       'PLATFORM_PAGE_CHANGED',
       '评论/点赞/收藏/关注任务缺少目标页面 URL。请在目标帖子页执行任务，或填写目标页面 URL。',
     );
   }
-  const url = ctx.plan.targetUrl ?? getPlatformUrls(ctx.plan.platform).publishUrl;
+  const url = ctx.plan.targetUrl ?? getInitialOpenUrl(ctx.plan);
   await ctx.logger.info(`自动打开页面: ${url}`);
   await openTargetUrl(ctx, url);
 }
@@ -286,26 +482,38 @@ async function ensureTabOpen(ctx: ExecContext): Promise<void> {
 async function runContentCommand(
   ctx: ExecContext,
   command: ContentCommand,
-  args?: Record<string, unknown>,
+  args?: Record<string, unknown> & { skipEnsureTab?: boolean; skipResolve?: boolean },
 ): Promise<ActionResult> {
-  // 兜底：动作需要页面但尚未打开时，按任务类型自动打开
-  await ensureTabOpen(ctx);
+  const skipEnsureTab = Boolean(args?.skipEnsureTab);
+  const skipResolve = Boolean(args?.skipResolve);
+  const commandArgs = args ? { ...args } : undefined;
+  if (commandArgs) {
+    delete commandArgs.skipEnsureTab;
+    delete commandArgs.skipResolve;
+  }
+
+  if (!skipEnsureTab) {
+    await ensureTabOpen(ctx);
+  }
   if (ctx.tabId == null) {
     throw new ExecError('PLATFORM_PAGE_CHANGED', '尚未打开目标页面');
   }
-  const ready = await waitForContentReady(ctx.tabId);
-  if (!ready) {
-    await ctx.logger.warn('页面脚本未就绪，刷新目标页面后重试');
-    await reloadTab(ctx.tabId);
-    const readyAfterReload = await waitForContentReady(ctx.tabId, 20);
-    if (!readyAfterReload) {
-      throw new ExecError('PLATFORM_PAGE_CHANGED', '页面脚本未就绪，可能不是受支持的平台页面');
-    }
+  if (!skipResolve) {
+    await resolveContentFrame(ctx, true, false, resolveOptsForCommand(ctx, command));
   }
-  const res = await sendToTab<ActionResult>(ctx.tabId, {
-    type: 'CONTENT_EXECUTE_ACTION',
-    payload: { taskId: ctx.record.id, platform: ctx.plan.platform, command, args },
-  });
+  const res = await sendToTab<ActionResult>(
+    ctx.tabId,
+    {
+      type: 'CONTENT_EXECUTE_ACTION',
+      payload: {
+        taskId: ctx.record.id,
+        platform: ctx.plan.platform,
+        command,
+        args: commandArgs,
+      },
+    },
+    { frameId: ctx.contentFrameId ?? 0 },
+  );
   if (!res.ok || !res.data) {
     throw new ExecError('PLATFORM_PAGE_CHANGED', res.errorMessage ?? '页面动作无响应');
   }
@@ -319,10 +527,54 @@ async function runContentCommand(
 async function handleAction(ctx: ExecContext, action: ActionName): Promise<void> {
   switch (action) {
     case 'check_login': {
+      const t0 = Date.now();
       await setStatus(ctx, 'checking_login', '检测登录状态');
       const res = await runContentCommand(ctx, 'check_login');
-      const loggedIn = (res.data as { loggedIn?: boolean })?.loggedIn ?? res.success;
+      const loginData = res.data as {
+        loggedIn?: boolean;
+        needVerification?: boolean;
+        message?: string;
+        verificationMatch?: string;
+        loginWall?: boolean;
+        onBackend?: boolean;
+        url?: string;
+      };
+      const loggedIn = loginData?.loggedIn ?? res.success;
+      const needVerification = loginData?.needVerification;
+      const elapsed = Date.now() - t0;
+
+      if (ctx.plan.platform === 'sohu') {
+        if (loggedIn) ctx.sohuLoginVerified = true;
+        await ctx.logger.info('搜狐登录探测完成', {
+          elapsedMs: elapsed,
+          frameId: ctx.contentFrameId,
+          frameUrl: loginData?.url,
+          loggedIn,
+          needVerification,
+          verificationMatch: loginData?.verificationMatch,
+          loginWall: loginData?.loginWall,
+          onBackend: loginData?.onBackend,
+          message: loginData?.message ?? res.message,
+        });
+        if (needVerification) {
+          await ctx.logger.warn('误报排查：验证码探测命中', {
+            verificationMatch: loginData?.verificationMatch,
+            frameUrl: loginData?.url,
+            frameId: ctx.contentFrameId,
+          });
+        }
+        if (elapsed > 5000) {
+          await ctx.logger.warn('check_login 耗时较长', { elapsedMs: elapsed });
+        }
+      }
+
       if (!loggedIn) {
+        if (needVerification) {
+          throw new PauseSignal(
+            'waiting_verification',
+            loginData?.message ?? '检测到验证码/安全验证，请人工处理后继续',
+          );
+        }
         throw new PauseSignal(
           'waiting_login',
           `未登录 ${PLATFORM_LABELS[ctx.plan.platform]}，请在打开的页面完成登录后点击「继续」`,
@@ -340,6 +592,10 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
     }
 
     case 'open_publish_page': {
+      if (ctx.plan.platform === 'sohu') {
+        await openSohuPublishPage(ctx);
+        break;
+      }
       await setStatus(ctx, 'opening_page', '打开发布页');
       const { publishUrl } = getPlatformUrls(ctx.plan.platform);
       await openTargetUrl(ctx, publishUrl);
@@ -474,7 +730,7 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
 
     case 'verify_result': {
       await setStatus(ctx, 'verifying_result', '校验执行结果');
-      if (ctx.plan.taskType === 'publish' && ctx.plan.platform === 'xiaohongshu') {
+      if (ctx.plan.taskType === 'publish' && (ctx.plan.platform === 'xiaohongshu' || ctx.plan.platform === 'sohu')) {
         const res = await runContentCommand(ctx, 'verify_result', {
           expectPublishSuccess: true,
         });
@@ -498,16 +754,8 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
       break;
     }
 
-    case 'take_screenshot': {
-      const shot = await captureTab(ctx.windowId);
-      if (shot) {
-        await updateTask(ctx.record.id, { screenshot: shot });
-        await ctx.logger.info('已截图保存');
-      } else {
-        await ctx.logger.warn('截图失败，已跳过');
-      }
+    case 'take_screenshot':
       break;
-    }
 
     case 'save_record': {
       await ctx.logger.info('任务记录已保存');
@@ -529,23 +777,32 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
 
 /** 打开或复用 tab 导航到目标 URL */
 async function openTargetUrl(ctx: ExecContext, url: string): Promise<void> {
+  const platform = ctx.plan.platform;
   if (ctx.tabId == null) {
-    ctx.tabId = await openTab(url);
+    ctx.tabId = await openTab(url, { platform });
     const tab = await chrome.tabs.get(ctx.tabId);
     ctx.windowId = tab.windowId;
+    if (platform === 'sohu') {
+      invalidateContentFrame(ctx);
+      await ensureSohuScriptOrReload(ctx);
+    }
     return;
   }
-  // 已在目标页面则不重复跳转，避免重载丢失已检测的登录态
   try {
     const tab = await chrome.tabs.get(ctx.tabId);
     if (tab.url && sameTarget(tab.url, url)) {
       await chrome.tabs.update(ctx.tabId, { active: true });
+      await bindPlatformSessionTab(platform, ctx.tabId);
       return;
     }
   } catch {
     // tab 可能已关闭，下面重新导航
   }
-  await navigateTab(ctx.tabId, url);
+  await navigateTab(ctx.tabId, url, { platform });
+  await bindPlatformSessionTab(platform, ctx.tabId);
+  if (ctx.plan.platform === 'sohu') {
+    invalidateContentFrame(ctx);
+  }
 }
 
 /** 比较两个 URL 是否指向同一页面（忽略 query / hash 差异） */
@@ -576,7 +833,6 @@ export async function executePlan(
   },
   startIndex = 0,
 ): Promise<{ status: TaskStatus; pausedAt?: number }> {
-  // 加载素材
   const materialRecords = params.plan.materials?.images?.length || params.plan.materials?.videos?.length
     ? await loadMaterials(params)
     : [];
@@ -591,6 +847,10 @@ export async function executePlan(
     content: params.content ? normalizeContentForPlan(params.content, params.plan) : undefined,
     materials: materialRecords,
   };
+
+  if (params.existingTabId != null) {
+    await bindPlatformSessionTab(params.plan.platform, params.existingTabId);
+  }
 
   const actions = params.plan.actions;
   for (let i = startIndex; i < actions.length; i++) {

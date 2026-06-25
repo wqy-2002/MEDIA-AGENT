@@ -8,8 +8,6 @@ import { TaskComposer } from '@/components/TaskComposer';
 import { TaskLogs } from '@/components/TaskLogs';
 import { TaskHistory } from '@/components/TaskHistory';
 
-// Side Panel 主入口（参见开发文档第 7.1 节）：任务输入、计划与日志展示、历史记录。
-
 type Tab = 'run' | 'history';
 
 export default function App() {
@@ -33,14 +31,12 @@ export default function App() {
     void getSettings().then(setSettings);
     void refreshTasks();
 
-    // 监听 Background 广播的任务状态与日志
     const off = onMessage((message) => {
       if (message.type === 'TASK_STATUS_UPDATE') {
         const { taskId, log } = message.payload;
-        // 先即时追加本条日志，再从 DB 拉取完整日志做权威对齐（避免早期日志因竞态丢失）
+        // 先追加本条日志，再从 DB 拉完整日志对齐，避免早期日志因竞态丢失
         if (log) appendLog(taskId, log);
         void reloadLogs(taskId);
-        // 拉取最新记录刷新状态
         void getTask(taskId).then((rec) => {
           if (rec) upsertTask(rec);
         });

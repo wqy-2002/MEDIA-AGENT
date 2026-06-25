@@ -24,9 +24,8 @@ export default defineConfig({
     host_permissions: [
       '*://*.xiaohongshu.com/*',
       '*://*.xhscdn.com/*',
-      '*://*.douyin.com/*',
-      '*://mp.weixin.qq.com/*',
-      '*://channels.weixin.qq.com/*',
+      '*://*.sohu.com/*',
+      '*://mp.sohu.com/*',
     ],
     // 点击插件图标打开 Side Panel
     action: {

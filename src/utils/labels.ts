@@ -1,7 +1,5 @@
 import type { TaskStatus, TaskType } from '@/types';
 
-// 状态与类型的中文展示标签，集中维护，便于 UI 复用。
-
 export const STATUS_LABELS: Record<TaskStatus, string> = {
   created: '已创建',
   parsing: '解析任务中',

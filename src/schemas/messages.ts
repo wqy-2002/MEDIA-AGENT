@@ -1,9 +1,6 @@
 import { z } from 'zod';
 import { platformNameSchema } from './task-plan';
 
-// 消息 payload 的 Zod 校验（参见开发文档第 13 节）
-// 关键 payload 必须校验，避免非法消息进入任务中枢。
-
 export const modelConfigSchema = z.object({
   apiKey: z.string().min(1),
   baseUrl: z.string().url(),

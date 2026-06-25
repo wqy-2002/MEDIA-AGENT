@@ -13,8 +13,6 @@ import {
 } from '@/utils/dom';
 import { describeElement } from './diagnostics';
 
-// DOM Driver：把真实页面上的查询、点击、填写和滚动动作统一封装。
-
 export interface CandidateQuery {
   selectors?: string[];
   texts?: string[];
@@ -190,7 +188,7 @@ export async function waitForText(texts: string[], timeout = 15000): Promise<boo
   return false;
 }
 
-/** 尝试使用原有 findByText 兜底，兼容旧代码 */
+/** 尝试使用 findByText 兜底 */
 export function findTextElement(text: string, tags = 'button,div[role="button"],span,a,.d-button') {
   return findByText<HTMLElement>(tags, text);
 }

@@ -48,7 +48,7 @@ describe('parseTaskPlan', () => {
   it('用户显式指定平台时应覆盖模型结果', async () => {
     const planJson = JSON.stringify({
       taskType: 'publish',
-      platform: 'douyin',
+      platform: 'sohu',
       actions: ['check_login', 'submit_publish'],
     });
     globalThis.fetch = mockFetchReply(planJson);

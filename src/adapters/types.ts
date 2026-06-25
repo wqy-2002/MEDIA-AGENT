@@ -17,10 +17,6 @@ export interface FillContentOptions {
   preferImageUpload?: boolean;
 }
 
-// 平台适配器接口（参见开发文档第 7.5 节）。
-// 每个平台独立实现，运行在 Content Script 的 DOM 上下文中。
-// LLM 不参与此层，所有 selector 与执行逻辑由开发者维护。
-
 export interface PlatformAdapter {
   platform: PlatformName;
 
@@ -77,6 +73,10 @@ export interface PlatformAdapter {
 export interface PlatformUrls {
   publishUrl: string;
   homeUrl: string;
+  /** 搜狐等：先打开后台列表页验证登录 */
+  dashboardUrl?: string;
+  /** 备用发文页 deep link */
+  publishUrlAlt?: string;
 }
 
 /**

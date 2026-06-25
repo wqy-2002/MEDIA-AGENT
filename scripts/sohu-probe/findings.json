@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "updatedAt": "2026-06-25",
+  "dashboardUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+  "publishUrls": [
+    "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1",
+    "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle"
+  ],
+  "primaryPublishUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1",
+  "alternatePublishUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle",
+  "loginDetection": {
+    "urlKeywords": ["login", "passport"],
+    "loggedInSignals": ["input[name=\"title\"]", ".publish-title input", "#editor .ql-editor"]
+  },
+  "selectors": {
+    "titleInput": [".publish-title input", "input[name=\"title\"]", "input[placeholder*=\"标题\"]"],
+    "bodyEditor": ["#editor .ql-editor", "#editor.ql-editor", ".ql-editor"],
+    "summaryInput": ["textarea[name=\"summary\"]", "textarea[placeholder*=\"摘要\"]"],
+    "tagInput": [".tag-input", "input[placeholder*=\"标签\"]"],
+    "coverUploadTrigger": [".upload-file.mp-upload", ".cover-upload", ".upload-file"],
+    "localUploadTab": ["text=本地上传"],
+    "coverFileInput": ["input[type=\"file\"]", "label[for=\"new-file\"]"],
+    "coverConfirmButton": [".board[contentpictures] .positive-button", "button:has-text(\"确定\")"],
+    "publishButton": [
+      "li.publish-report-btn.active.positive-button",
+      "li.publish-report-btn.positive-button",
+      "li[report-attr*=\"content-button-commit\"]",
+      "ul.button-list li.positive-button",
+      "button.publish-btn"
+    ],
+    "publishConfirmButton": [".positive-button", "button:has-text(\"确定\")"],
+    "draftButton": ["button:has-text(\"保存\")", "button:has-text(\"草稿\")"],
+    "popCover": [".d-popover", "div.d-popover", ".guide-modal", ".modal-close"]
+  },
+  "editorType": "quill",
+  "successSignals": ["发布成功", "提交成功", "审核中", "已发布"],
+  "failureSignals": ["请上传封面", "请选择栏目", "标题", "不符合规范", "发布失败"],
+  "notes": [
+    "两段式导航：先打开 dashboardUrl 验证登录，再进入 primaryPublishUrl",
+    "正文使用 Quill 编辑器，建议 ClipboardEvent paste 填写",
+    "登录页 URL 含 passport 或 login",
+    "封面可选流程：点击上传区 -> 本地上传 -> file input -> 确定"
+  ]
+}

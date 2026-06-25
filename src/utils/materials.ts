@@ -1,9 +1,6 @@
 import type { MaterialRecord } from '@/types';
 import { putMaterial } from '@/core/storage/db';
 
-// 素材处理：把用户选择的文件读为 base64 dataUrl 并存入 IndexedDB，
-// 返回素材 id 列表供任务计划引用。
-
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
