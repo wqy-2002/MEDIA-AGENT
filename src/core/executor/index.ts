@@ -28,6 +28,7 @@ import {
   scanReadyFrame,
 } from './tab-manager';
 import type { ContentReadyResult, WaitForContentReadyOptions } from './tab-manager';
+import { humanStepGap } from '@/core/automation/human-pacing';
 
 /** 执行上下文：在单次任务执行过程中传递的共享状态 */
 interface ExecContext {
@@ -523,8 +524,44 @@ async function runContentCommand(
   return res.data;
 }
 
+const XHS_PUBLISH_GAP_ACTIONS = new Set<ActionName>([
+  'upload_media',
+  'fill_title',
+  'fill_body',
+  'fill_description',
+  'fill_hashtags',
+  'submit_publish',
+]);
+
+/** 小红书发布大步骤间随机停顿 */
+async function maybeHumanPublishStepGap(ctx: ExecContext, action: ActionName): Promise<void> {
+  if (ctx.plan.platform !== 'xiaohongshu' || ctx.plan.taskType !== 'publish') return;
+  if (!XHS_PUBLISH_GAP_ACTIONS.has(action)) return;
+  const ms = await humanStepGap(ctx.settings);
+  if (ms > 0) {
+    await ctx.logger.info(`防风控：步骤间等待 ${(ms / 1000).toFixed(1)}s`);
+  }
+}
+
+/** 频率限制/验证码 → 暂停任务，不自动重试 */
+function throwIfRiskPause(res: ActionResult): void {
+  if (res.errorCode === 'RATE_LIMITED') {
+    throw new PauseSignal(
+      'waiting_verification',
+      res.message ?? '平台提示操作频繁，请稍后人工处理后再继续',
+    );
+  }
+  if (res.errorCode === 'CAPTCHA_REQUIRED') {
+    throw new PauseSignal(
+      'waiting_verification',
+      res.message ?? '检测到安全验证，请人工处理后继续',
+    );
+  }
+}
+
 /** 单个动作的执行处理 */
 async function handleAction(ctx: ExecContext, action: ActionName): Promise<void> {
+  await maybeHumanPublishStepGap(ctx, action);
   switch (action) {
     case 'check_login': {
       const t0 = Date.now();
@@ -585,6 +622,19 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
     }
 
     case 'generate_content': {
+      if (ctx.content) {
+        await setStatus(ctx, 'generating_content', '使用用户自备文案');
+        await updateTask(ctx.record.id, { generatedContent: ctx.content });
+        await putDraft({
+          id: `${ctx.record.id}-draft`,
+          taskId: ctx.record.id,
+          platform: ctx.plan.platform,
+          content: ctx.content,
+          createdAt: Date.now(),
+        });
+        await ctx.logger.info('使用用户自备文案', ctx.content);
+        break;
+      }
       await setStatus(ctx, 'generating_content', '调用模型生成内容');
       const content = await generateAndStoreContent(ctx);
       await ctx.logger.info('内容生成完成', content);
@@ -622,6 +672,7 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
         files: ctx.materials,
       });
       if (!res.success) {
+        throwIfRiskPause(res);
         throw new ExecError(
           (res.errorCode as ExecError['code']) ?? 'MEDIA_UPLOAD_FAILED',
           res.message ?? '素材上传失败',
@@ -652,6 +703,7 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
         preferImageUpload: publishMode === 'image_upload',
       });
       if (!res.success) {
+        throwIfRiskPause(res);
         throw new ExecError(
           (res.errorCode as ExecError['code']) ?? 'INPUT_FIELD_NOT_FOUND',
           res.message ?? '内容填写失败',
@@ -672,6 +724,7 @@ async function handleAction(ctx: ExecContext, action: ActionName): Promise<void>
         res = await runVisualPublishFallback(ctx, res);
       }
       if (!res.success) {
+        throwIfRiskPause(res);
         throw new ExecError(
           (res.errorCode as ExecError['code']) ?? 'SUBMIT_FAILED',
           res.message ?? '发布失败',

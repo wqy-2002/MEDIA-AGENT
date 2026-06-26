@@ -10,6 +10,8 @@ import { createTaskLogger } from '@/core/logger';
 import { getSettings, getModelConfig } from '@/core/storage/settings';
 import { putTask, updateTask, getTask } from '@/core/storage/db';
 import { parseTaskPlan } from '@/core/planner';
+import { buildManualPublishPlan } from '@/core/planner/manual-publish-plan';
+import { validateManualContent } from '@/schemas/manual-content';
 import { checkPolicy } from '@/core/executor/policy-guard';
 import { executePlan } from '@/core/executor';
 import { ModelError } from '@/core/model';
@@ -88,7 +90,10 @@ export async function createTask(payload: CreateTaskPayload): Promise<TaskRecord
     id,
     taskType: 'publish',
     platform: payload.platform ?? settings.defaultPlatform,
-    userInput: payload.userInput,
+    userInput:
+      payload.contentSource === 'manual'
+        ? payload.userInput.trim() || '手动发布'
+        : payload.userInput,
     status: 'created',
     startedAt: Date.now(),
     retryCount: 0,
@@ -118,23 +123,34 @@ async function runTaskPipeline(
     const platform = payload.platform ?? settings.defaultPlatform;
     const sessionTabId = await resolvePlatformTabForTask(platform);
     const existingTabId = activeTab.tabId ?? sessionTabId;
-    await updateTask(id, { status: 'parsing' });
-    await logger.status('parsing', '正在调用模型解析任务');
+    const isManual = payload.contentSource === 'manual';
 
-    const plan = await parseTaskPlan(modelConfig, settings, {
-      userInput: payload.userInput,
-      platform: payload.platform,
-      targetUrl: activeTab.targetUrl,
-      hasImages: Boolean(payload.materialIds?.length),
-      hasVideos: false,
-    });
+    let plan: TaskPlan;
+    let manualContent: GeneratedContent | undefined;
 
-    if (payload.materialIds?.length) {
-      plan.materials = plan.materials ?? {};
-      if (plan.contentType === 'video') {
-        plan.materials.videos = payload.materialIds;
-      } else {
-        plan.materials.images = payload.materialIds;
+    if (isManual) {
+      manualContent = validateManualContent(payload.manualContent);
+      await updateTask(id, { status: 'planning' });
+      await logger.status('planning', '使用用户自备文案');
+      plan = buildManualPublishPlan(platform, payload.materialIds);
+    } else {
+      await updateTask(id, { status: 'parsing' });
+      await logger.status('parsing', '正在调用模型解析任务');
+      plan = await parseTaskPlan(modelConfig, settings, {
+        userInput: payload.userInput,
+        platform: payload.platform,
+        targetUrl: activeTab.targetUrl,
+        hasImages: Boolean(payload.materialIds?.length),
+        hasVideos: false,
+      });
+
+      if (payload.materialIds?.length) {
+        plan.materials = plan.materials ?? {};
+        if (plan.contentType === 'video') {
+          plan.materials.videos = payload.materialIds;
+        } else {
+          plan.materials.images = payload.materialIds;
+        }
       }
     }
 
@@ -144,6 +160,7 @@ async function runTaskPipeline(
       taskType: plan.taskType,
       platform: plan.platform,
       targetUrl: plan.targetUrl,
+      ...(manualContent ? { generatedContent: manualContent } : {}),
     });
     await logger.status('planning', '执行计划已生成');
     await logger.info('TaskPlan', plan);
@@ -162,7 +179,14 @@ async function runTaskPipeline(
 
     const record = (await getTask(id))!;
     // 互动任务复用当前活动标签页；发布任务复用持久化平台标签页，避免每次像新设备登录
-    const rt: RuntimeTask = { record, plan, settings, modelConfig, tabId: existingTabId };
+    const rt: RuntimeTask = {
+      record,
+      plan,
+      settings,
+      modelConfig,
+      tabId: existingTabId,
+      content: manualContent ?? record.generatedContent,
+    };
     runtime.set(id, rt);
 
     const result = await executePlan({
@@ -172,6 +196,7 @@ async function runTaskPipeline(
       modelConfig,
       logger,
       existingTabId,
+      content: manualContent ?? record.generatedContent,
     });
 
     if (result.status === 'waiting_login' || result.status === 'waiting_verification') {
@@ -235,6 +260,8 @@ export async function retryTask(taskId: string): Promise<void> {
       userInput: record.userInput,
       platform: record.platform,
       targetUrl: record.targetUrl,
+      contentSource: record.plan?.contentSource,
+      manualContent: record.generatedContent,
       materialIds: [
         ...(record.plan?.materials?.images ?? []),
         ...(record.plan?.materials?.videos ?? []),

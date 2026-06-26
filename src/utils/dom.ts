@@ -114,6 +114,29 @@ export function getEditableText(el: HTMLElement): string {
   return (el.innerText || el.textContent || '').trim();
 }
 
+/** 清空可编辑元素内容（防风控逐字输入前去除占位文案） */
+export function clearEditableContent(el: HTMLElement): void {
+  el.focus();
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    setNativeValue(el, '');
+    return;
+  }
+  try {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.execCommand('delete', false);
+  } catch {
+    // execCommand 失败时回退直接清空
+  }
+  if (getEditableText(el)) {
+    el.textContent = '';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }
+}
+
 /**
  * 向 contenteditable 元素输入文本（小红书等正文常用富文本编辑器）。
  */

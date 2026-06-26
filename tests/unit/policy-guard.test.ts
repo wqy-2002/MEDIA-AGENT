@@ -4,8 +4,10 @@ import type { AppSettings, TaskPlan } from '@/types';
 // 策略守卫测试：验证平台开关、自动化开关与频率限制的拦截逻辑。
 
 let todayCount = 0;
+let lastPublishAt: number | null = null;
 vi.mock('@/core/storage/db', () => ({
   countTodayByType: vi.fn(async () => todayCount),
+  getLastSuccessfulPublishTime: vi.fn(async () => lastPublishAt),
 }));
 
 import { checkPolicy } from '@/core/executor/policy-guard';
@@ -17,12 +19,14 @@ function settingsWith(patch: Partial<AppSettings>): AppSettings {
     ...patch,
     automation: { ...DEFAULT_SETTINGS.automation, ...patch.automation },
     rateLimit: { ...DEFAULT_SETTINGS.rateLimit, ...patch.rateLimit },
+    publishPacing: { ...DEFAULT_SETTINGS.publishPacing, ...patch.publishPacing },
     platformSwitch: { ...DEFAULT_SETTINGS.platformSwitch, ...patch.platformSwitch },
   };
 }
 
 beforeEach(() => {
   todayCount = 0;
+  lastPublishAt = null;
 });
 
 describe('checkPolicy', () => {
@@ -71,5 +75,37 @@ describe('checkPolicy', () => {
     const res = await checkPolicy(plan, settings);
     expect(res.allowed).toBe(false);
     expect(res.reason).toContain('上限');
+  });
+
+  it('发布超出单日上限时应拦截', async () => {
+    todayCount = 10;
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'xiaohongshu',
+      actions: ['submit_publish'],
+    };
+    const settings = settingsWith({
+      automation: { autoPublish: true } as never,
+      rateLimit: { maxPublishesPerDay: 5 } as never,
+    });
+    const res = await checkPolicy(plan, settings);
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toContain('发布上限');
+  });
+
+  it('距上次成功发布间隔不足时应拦截', async () => {
+    lastPublishAt = Date.now() - 5 * 60 * 1000;
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'xiaohongshu',
+      actions: ['submit_publish'],
+    };
+    const settings = settingsWith({
+      automation: { autoPublish: true } as never,
+      rateLimit: { minMinutesBetweenPublishes: 30 } as never,
+    });
+    const res = await checkPolicy(plan, settings);
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toContain('分钟');
   });
 });

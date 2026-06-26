@@ -74,6 +74,10 @@ vi.mock('@/core/messaging', () => ({
     sendToTab(...(a as [number, { payload: { command: string; args?: Record<string, unknown> } }])),
 }));
 
+vi.mock('@/core/automation/human-pacing', () => ({
+  humanStepGap: vi.fn(async () => 0),
+}));
+
 import { executePlan } from '@/core/executor';
 
 function makeLogger() {
@@ -151,6 +155,47 @@ describe('executePlan', () => {
     expect(sentCommands.filter((c) => c === 'fill_content')).toHaveLength(1);
     // 内容已生成
     expect(generateContent).toHaveBeenCalled();
+  });
+
+  it('预置 content 时 generate_content 跳过 LLM', async () => {
+    const preset: GeneratedContent = {
+      title: '用户标题',
+      body: '用户正文',
+      hashtags: ['露营'],
+    };
+    const plan: TaskPlan = {
+      taskType: 'publish',
+      platform: 'xiaohongshu',
+      contentType: 'note',
+      actions: [
+        'check_login',
+        'generate_content',
+        'open_publish_page',
+        'fill_title',
+        'fill_body',
+        'fill_hashtags',
+        'submit_publish',
+        'verify_result',
+        'save_record',
+      ],
+    };
+    const logger = makeLogger();
+    const result = await executePlan({
+      record: makeRecord(),
+      plan,
+      settings,
+      modelConfig,
+      logger,
+      content: preset,
+    });
+
+    expect(result.status).toBe('success');
+    expect(generateContent).not.toHaveBeenCalled();
+    expect(putDraft).toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      '使用用户自备文案',
+      expect.objectContaining({ title: '用户标题', body: '用户正文' }),
+    );
   });
 
   it('未登录时应暂停并返回 waiting_login，pausedAt 指向 check_login', async () => {

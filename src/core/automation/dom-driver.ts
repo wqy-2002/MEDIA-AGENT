@@ -132,11 +132,48 @@ export async function fillElement(el: HTMLElement, text: string): Promise<void> 
   }
 }
 
+/** 小红书文字配图草稿区常见占位前缀 */
+const EDITABLE_PLACEHOLDER_PREFIXES = ['写文字生成图片', '写文字'];
+
+function normalizeEditableCompareText(text: string): string {
+  return text.replace(/\s+/g, '');
+}
+
+function stripEditablePlaceholderPrefix(text: string): string {
+  let result = text;
+  for (const prefix of EDITABLE_PLACEHOLDER_PREFIXES) {
+    if (result.startsWith(prefix)) {
+      result = result.slice(prefix.length);
+    }
+  }
+  return result;
+}
+
+function buildEditableProbes(expected: string): string[] {
+  const trimmed = expected.trim();
+  if (!trimmed) return [];
+  const probes: string[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const part = line.trim();
+    if (!part) continue;
+    probes.push(part.slice(0, Math.min(24, part.length)));
+  }
+  if (!probes.length) {
+    probes.push(trimmed.slice(0, Math.min(24, trimmed.length)));
+  }
+  return probes;
+}
+
 /** 验证可编辑元素是否包含预期文本片段 */
 export function verifyEditableContains(el: HTMLElement, expected: string): boolean {
-  const probe = expected.trim().slice(0, Math.min(12, expected.trim().length));
-  if (!probe) return true;
-  return getEditableText(el).includes(probe);
+  const actual = stripEditablePlaceholderPrefix(
+    normalizeEditableCompareText(getEditableText(el)),
+  );
+  const probes = buildEditableProbes(expected);
+  if (!probes.length) return true;
+  return probes.some((probe) =>
+    actual.includes(normalizeEditableCompareText(probe)),
+  );
 }
 
 /** 等待并填写第一个候选输入/编辑器 */

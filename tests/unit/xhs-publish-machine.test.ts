@@ -3,11 +3,35 @@ import {
   detectXhsPublishState,
   findXhsPublishButton,
   getXhsPublishFlowDiagnostics,
+  isPublishSuccessSignal,
   runXhsFillContentFlow,
   runXhsSubmitPublishFlow,
 } from '@/adapters/xiaohongshu/publish-machine';
+import { DEFAULT_PUBLISH_PACING, setPublishPacingOverride } from '@/core/automation/human-pacing';
 
 // 小红书发布状态机测试：覆盖 publish-page SPA 阶段切换与 closed shadow Host。
+
+vi.mock('@/core/automation/human-pacing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/automation/human-pacing')>();
+  return {
+    ...actual,
+    humanActionDelay: vi.fn(async () => {}),
+    humanImageUploadGap: vi.fn(async () => {}),
+    humanPreSubmitDwell: vi.fn(async () => 0),
+    humanStateTransitionDelayMs: vi.fn(() => 0),
+    humanFieldGap: vi.fn(async () => 0),
+    getCharDelayMs: vi.fn(() => 0),
+    typeHuman: vi.fn(async (el: HTMLElement, text: string) => {
+      const { fillElement } = await import('@/core/automation/dom-driver');
+      await fillElement(el, text);
+    }),
+    typeCharByCharHuman: vi.fn(async () => {}),
+    loadPublishPacingFromSettings: vi.fn(async () => ({
+      ...DEFAULT_PUBLISH_PACING,
+      enabled: false,
+    })),
+  };
+});
 
 function makeVisibleRects(x = 260, y = 120) {
   Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
@@ -58,6 +82,7 @@ function mountFinalForm(publishInIframe = false) {
 }
 
 beforeEach(() => {
+  setPublishPacingOverride({ ...DEFAULT_PUBLISH_PACING, enabled: false });
   makeVisibleRects();
   document.body.innerHTML = `
     <nav><span>发布笔记</span></nav>
@@ -521,5 +546,36 @@ describe('xhs publish machine', () => {
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe('PLATFORM_PAGE_CHANGED');
     expect(result.message).toContain('about:blank');
+  });
+
+  it('note-manager 搜索框「已发布」子串不应误判 success', () => {
+    const saved = window.location;
+    vi.stubGlobal('location', {
+      ...saved,
+      href: 'https://creator.xiaohongshu.com/new/note-manager?source=official',
+    });
+    document.body.innerHTML = `
+      <input class="d-text" placeholder="搜索已发布的笔记" />
+    `;
+    expect(detectXhsPublishState()).toBe('unknown');
+    expect(isPublishSuccessSignal()).toBe(false);
+    vi.stubGlobal('location', saved);
+  });
+
+  it('发布成功强文案应判定 success', () => {
+    document.body.innerHTML = '<div class="publish-page">发布成功</div>';
+    expect(detectXhsPublishState()).toBe('success');
+    expect(isPublishSuccessSignal()).toBe(true);
+  });
+
+  it('note-manager URL 且无表单、无强成功文案不应判定 success', () => {
+    const saved = window.location;
+    vi.stubGlobal('location', {
+      ...saved,
+      href: 'https://creator.xiaohongshu.com/new/note-manager?source=official',
+    });
+    document.body.innerHTML = '<div>笔记列表</div>';
+    expect(isPublishSuccessSignal()).toBe(false);
+    vi.stubGlobal('location', saved);
   });
 });

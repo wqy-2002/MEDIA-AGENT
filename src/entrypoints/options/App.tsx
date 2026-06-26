@@ -8,6 +8,11 @@ import {
 import { clearAllData } from '@/core/storage/db';
 import { sendToBackground } from '@/core/messaging';
 import { PLATFORM_LABELS } from '@/adapters/registry';
+import {
+  applyTypingSafetyLevel,
+  getTypingSafetyLabel,
+} from '@/core/automation/typing-safety-presets';
+import type { TypingSafetyLevel } from '@/types';
 
 const PLATFORMS: PlatformName[] = ['xiaohongshu', 'sohu'];
 
@@ -210,6 +215,101 @@ export default function App() {
                 rateLimit: {
                   ...settings.rateLimit,
                   maxConsecutiveFailures: Number(e.target.value),
+                },
+              })
+            }
+          />
+        </Field>
+        <Field label="单日发布上限">
+          <input
+            type="number"
+            className="input"
+            value={settings.rateLimit.maxPublishesPerDay}
+            onChange={(e) =>
+              update({
+                rateLimit: { ...settings.rateLimit, maxPublishesPerDay: Number(e.target.value) },
+              })
+            }
+          />
+        </Field>
+        <Field label="发布最短间隔（分钟）">
+          <input
+            type="number"
+            className="input"
+            value={settings.rateLimit.minMinutesBetweenPublishes}
+            onChange={(e) =>
+              update({
+                rateLimit: {
+                  ...settings.rateLimit,
+                  minMinutesBetweenPublishes: Number(e.target.value),
+                },
+              })
+            }
+          />
+        </Field>
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-800">小红书发布防风控</h2>
+        <p className="text-xs text-gray-500">
+          放慢发布节奏、分块输入与步骤间停顿，降低触发平台风控的概率。调试时可关闭「启用节奏」。
+        </p>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={settings.publishPacing.enabled}
+            onChange={(e) =>
+              update({
+                publishPacing: { ...settings.publishPacing, enabled: e.target.checked },
+              })
+            }
+          />
+          启用发布节奏（防风控）
+        </label>
+        <Field label="文本填入安全等级">
+          <select
+            className="input"
+            value={settings.publishPacing.typingSafetyLevel ?? 'ultra_safe'}
+            onChange={(e) => {
+              const level = e.target.value as TypingSafetyLevel;
+              update({
+                publishPacing: applyTypingSafetyLevel(level, settings.publishPacing),
+              });
+            }}
+          >
+            {(['fast', 'balanced', 'safe', 'ultra_safe'] as TypingSafetyLevel[]).map((level) => (
+              <option key={level} value={level}>
+                {getTypingSafetyLabel(level)}
+                {level === 'ultra_safe' ? '（逐字输入，默认）' : ''}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="大步骤间停顿（秒，最小）">
+          <input
+            type="number"
+            className="input"
+            value={settings.publishPacing.stepGapMinMs / 1000}
+            onChange={(e) =>
+              update({
+                publishPacing: {
+                  ...settings.publishPacing,
+                  stepGapMinMs: Number(e.target.value) * 1000,
+                },
+              })
+            }
+          />
+        </Field>
+        <Field label="大步骤间停顿（秒，最大）">
+          <input
+            type="number"
+            className="input"
+            value={settings.publishPacing.stepGapMaxMs / 1000}
+            onChange={(e) =>
+              update({
+                publishPacing: {
+                  ...settings.publishPacing,
+                  stepGapMaxMs: Number(e.target.value) * 1000,
                 },
               })
             }

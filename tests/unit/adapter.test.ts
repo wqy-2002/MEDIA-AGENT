@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { xiaohongshuAdapter } from '@/adapters/xiaohongshu';
 import { platformFromUrl } from '@/adapters/registry';
+import { DEFAULT_PUBLISH_PACING } from '@/core/automation/human-pacing';
 import {
   setNativeValue,
   dataUrlToFile,
@@ -11,6 +12,27 @@ import {
 
 // 适配器与 DOM 工具测试（happy-dom 环境）。
 // 注：waitForElement 依赖布局可见性，happy-dom 不做布局，这里只测同步查询类逻辑。
+
+vi.mock('@/core/automation/human-pacing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/automation/human-pacing')>();
+  return {
+    ...actual,
+    humanActionDelay: vi.fn(async () => {}),
+    humanImageUploadGap: vi.fn(async () => {}),
+    humanPreSubmitDwell: vi.fn(async () => 0),
+    humanStateTransitionDelayMs: vi.fn(() => 0),
+    humanFieldGap: vi.fn(async () => 0),
+    getCharDelayMs: vi.fn(() => 0),
+    typeHuman: vi.fn(async (el: HTMLElement, text: string) => {
+      const { fillElement } = await import('@/core/automation/dom-driver');
+      await fillElement(el, text);
+    }),
+    loadPublishPacingFromSettings: vi.fn(async () => ({
+      ...DEFAULT_PUBLISH_PACING,
+      enabled: false,
+    })),
+  };
+});
 
 function setPageUrl(url: string): void {
   const testWindow = window as Window & { happyDOM?: { setURL: (value: string) => void } };
@@ -27,10 +49,10 @@ beforeEach(() => {
       y: 0,
       top: 0,
       left: 260,
-      right: 360,
-      bottom: 20,
-      width: 100,
-      height: 20,
+      right: 460,
+      bottom: 40,
+      width: 200,
+      height: 40,
       toJSON: () => ({}),
     }),
   });
@@ -65,6 +87,7 @@ describe('xiaohongshuAdapter.detectLoginStatus', () => {
 
 describe('xiaohongshuAdapter 互动动作', () => {
   it('入口态只有“文字配图”时，fillContent 应先进入编辑态再填写', async () => {
+    setPageUrl('https://creator.xiaohongshu.com/publish/publish?source=official');
     document.body.innerHTML =
       '<button class="d-button d-button-default">上传图片</button><button class="d-button d-button-default">文字配图</button>';
     const textImageButton = document.querySelectorAll('button')[1];

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { platformNameSchema } from './task-plan';
+import { manualContentSchema } from './manual-content';
 
 export const modelConfigSchema = z.object({
   apiKey: z.string().min(1),
@@ -7,12 +8,32 @@ export const modelConfigSchema = z.object({
   model: z.string().min(1),
 });
 
-export const createTaskPayloadSchema = z.object({
-  userInput: z.string().min(1, '任务描述不能为空'),
-  platform: platformNameSchema.optional(),
-  targetUrl: z.string().url().optional(),
-  materialIds: z.array(z.string()).optional(),
-});
+export const createTaskPayloadSchema = z
+  .object({
+    userInput: z.string(),
+    contentSource: z.enum(['ai', 'manual']).optional().default('ai'),
+    manualContent: manualContentSchema.optional(),
+    platform: platformNameSchema.optional(),
+    targetUrl: z.string().url().optional(),
+    materialIds: z.array(z.string()).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.contentSource === 'manual') {
+      if (!data.manualContent) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: '缺少手动发布文案',
+          path: ['manualContent'],
+        });
+      }
+    } else if (!data.userInput.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '任务描述不能为空',
+        path: ['userInput'],
+      });
+    }
+  });
 
 export const contentCommandSchema = z.enum([
   'check_login',

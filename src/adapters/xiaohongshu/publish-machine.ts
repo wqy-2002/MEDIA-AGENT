@@ -1,7 +1,6 @@
 import type { ActionResult, GeneratedContent, PublishResult, UploadResult } from '@/types';
 import {
   clickByText,
-  fillElement,
   queryCandidates,
   verifyEditableContains,
   waitForCandidate,
@@ -9,6 +8,17 @@ import {
 } from '@/core/automation/dom-driver';
 import { collectDiagnostics, formatDiagnostics } from '@/core/automation/diagnostics';
 import { runStateMachine } from '@/core/automation/state-machine';
+import {
+  humanActionDelay,
+  humanImageUploadGap,
+  humanPreSubmitDwell,
+  humanStateTransitionDelayMs,
+  humanFieldGap,
+  getCharDelayMs,
+  loadPublishPacingFromSettings,
+  typeHuman,
+  typeCharByCharHuman,
+} from '@/core/automation/human-pacing';
 import {
   deepQueryAll,
   getEditableText,
@@ -19,7 +29,7 @@ import {
   simulateClick,
   sleep,
 } from '@/utils/dom';
-import { xhsSelectors } from './selectors';
+import { XHS_URLS, xhsSelectors } from './selectors';
 import type { XhsPublishState } from './states';
 
 export type XhsPublishMode = 'image_upload' | 'text_image';
@@ -236,21 +246,25 @@ function clickEmptyPosition(): void {
 }
 
 /** 逐字符输入，模拟真实键盘输入（用于话题标签联想） */
-async function typeCharByChar(el: HTMLElement, text: string, delayMs = 50): Promise<void> {
-  el.focus();
-  for (const char of text) {
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-      setNativeValue(el, `${el.value}${char}`);
-    } else {
-      try {
-        document.execCommand('insertText', false, char);
-      } catch {
-        el.textContent = `${el.textContent ?? ''}${char}`;
+async function typeCharByChar(el: HTMLElement, text: string, delayMs?: number): Promise<void> {
+  if (delayMs != null) {
+    el.focus();
+    for (const char of text) {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        setNativeValue(el, `${el.value}${char}`);
+      } else {
+        try {
+          document.execCommand('insertText', false, char);
+        } catch {
+          el.textContent = `${el.textContent ?? ''}${char}`;
+        }
+        el.dispatchEvent(new InputEvent('input', { bubbles: true }));
       }
-      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      await sleep(delayMs);
     }
-    await sleep(delayMs);
+    return;
   }
+  await typeCharByCharHuman(el, text);
 }
 
 /** 先按方向键+回车收起编辑器浮层，再逐个输入 #话题 并点选联想项 */
@@ -278,8 +292,8 @@ async function inputXhsTags(contentEl: HTMLElement, tags: string[]): Promise<Act
 
   for (const tag of normalized) {
     await typeCharByChar(contentEl, '#', 0);
-    await sleep(200);
-    await typeCharByChar(contentEl, tag, 50);
+    await sleep(getCharDelayMs() > 0 ? Math.min(200, getCharDelayMs()) : 200);
+    await typeCharByChar(contentEl, tag);
 
     let topicItem: HTMLElement | undefined;
     const pollStart = Date.now();
@@ -293,7 +307,7 @@ async function inputXhsTags(contentEl: HTMLElement, tags: string[]): Promise<Act
       simulateClick(topicItem);
       await sleep(300);
     } else {
-      await typeCharByChar(contentEl, ' ', 50);
+      await typeCharByChar(contentEl, ' ', getCharDelayMs());
     }
   }
   return { success: true, message: `已输入 ${normalized.length} 个话题标签` };
@@ -774,22 +788,60 @@ export function getXhsPublishFlowDiagnostics(): Record<string, unknown> {
   };
 }
 
+/** 发布成功强文案（不含易误判的裸「已发布」「笔记管理」） */
+const PUBLISH_SUCCESS_STRONG_TEXT = /发布成功|笔记发布成功|发布审核中/;
+
+/** 发布成功 URL 特征（含笔记管理页跳转） */
+const PUBLISH_SUCCESS_URL_KEYWORDS = [
+  'publish/success',
+  'published=true',
+  'content/manage',
+  '/notes',
+  'note/manage',
+  'note-manager',
+  '/success',
+];
+
+function currentPublishUrl(): string {
+  return location.href.toLowerCase();
+}
+
+function isPublishSuccessUrl(url = currentPublishUrl()): boolean {
+  return PUBLISH_SUCCESS_URL_KEYWORDS.some((kw) => url.includes(kw));
+}
+
+function hasStrongPublishSuccessText(scoped?: string, full?: string): boolean {
+  const scopedText = scoped ?? publishPageText();
+  const fullText = full ?? bodyText();
+  return PUBLISH_SUCCESS_STRONG_TEXT.test(scopedText) || PUBLISH_SUCCESS_STRONG_TEXT.test(fullText);
+}
+
+/** 笔记管理列表页：URL 为 note-manager 且无最终发布表单 */
+function isNoteManagerListPage(): boolean {
+  const url = currentPublishUrl();
+  if (!url.includes('note-manager')) return false;
+  if (hasRealFinalFormFields()) return false;
+  return true;
+}
+
+/** 综合判断是否处于发布成功态（排除列表页搜索框「已发布」子串误判） */
+export function isPublishSuccessSignal(): boolean {
+  if (isNoteManagerListPage()) return false;
+  if (isPublishSuccessUrl()) {
+    if (currentPublishUrl().includes('note-manager') && !hasStrongPublishSuccessText()) {
+      return false;
+    }
+    return true;
+  }
+  return hasStrongPublishSuccessText();
+}
+
 /** 校验发布成功/失败（优先 publish-page 内文案，URL 跳转与 Toast 兜底） */
 export async function verifyXhsPublishSuccess(timeout = 15000): Promise<ActionResult> {
-  const successTexts = ['发布成功', '笔记发布成功', '已发布', '发布审核中', '笔记管理'];
   const failureTexts = ['发布失败', '提交失败', '内容违规', '请修改后再发布', '账号异常'];
-  const successUrlKeywords = [
-    'publish/success',
-    'published=true',
-    'content/manage',
-    '/notes',
-    'note/manage',
-    '/success',
-  ];
 
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    const url = location.href.toLowerCase();
     const scoped = publishPageText();
     const full = bodyText();
     const merged = `${scoped}\n${full}`;
@@ -804,11 +856,10 @@ export async function verifyXhsPublishSuccess(timeout = 15000): Promise<ActionRe
       }
     }
 
-    if (successUrlKeywords.some((kw) => url.includes(kw))) {
-      return { success: true, message: '检测到 URL 跳转到作品管理页' };
-    }
-
-    if (successTexts.some((p) => scoped.includes(p) || full.includes(p))) {
+    if (isPublishSuccessSignal()) {
+      if (isPublishSuccessUrl()) {
+        return { success: true, message: '检测到 URL 跳转到作品管理页' };
+      }
       return { success: true, message: '检测到发布成功信号' };
     }
 
@@ -899,6 +950,32 @@ function detectXhsBlockers(): string[] {
     [/请先完成|同意|我知道了/, '页面确认弹层或未完成项'],
   ];
   return patterns.filter(([re]) => re.test(text)).map(([, label]) => label);
+}
+
+/** 根据页面阻塞文案映射错误码 */
+function errorCodeFromBlockers(blockers: string[]): ActionResult['errorCode'] {
+  if (blockers.includes('频率限制')) return 'RATE_LIMITED';
+  if (blockers.includes('安全验证')) return 'CAPTCHA_REQUIRED';
+  return 'BLOCKED_BY_DIALOG';
+}
+
+/** 分块输入填写（防风控），替代整段粘贴 */
+async function fillElementHuman(el: HTMLElement, text: string): Promise<void> {
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  await humanActionDelay();
+  await typeHuman(el, text);
+  await humanActionDelay();
+}
+
+/** 带节奏停顿的文本点击 */
+async function humanClickByText(
+  texts: string[],
+  options: Parameters<typeof clickByText>[1] = {},
+): Promise<ReturnType<typeof clickByText>> {
+  await humanActionDelay();
+  const res = await clickByText(texts, options);
+  await humanActionDelay();
+  return res;
 }
 
 function scorePublishCandidate(el: HTMLElement): number {
@@ -1114,6 +1191,7 @@ export async function ensureXhsImageTextTab(): Promise<ActionResult> {
  * 逐张上传图片。首张使用 .upload-input，后续使用 input[type="file"]，每张上传后等待预览出现。
  */
 export async function uploadXhsImagesSequentially(files: File[]): Promise<UploadResult> {
+  await loadPublishPacingFromSettings();
   if (!files.length) {
     return { success: true, uploadedCount: 0, message: '无素材需要上传' };
   }
@@ -1129,7 +1207,7 @@ export async function uploadXhsImagesSequentially(files: File[]): Promise<Upload
   }
 
   // 入口态需先点“上传图片”，否则隐藏 file input 存在但页面不会进入编辑态
-  await clickByText(['上传图片', '上传图文'], {
+  await humanClickByText(['上传图片', '上传图文'], {
     exactText: false,
     tags: 'button,div[role="button"],span,.d-button',
     timeout: 8000,
@@ -1172,7 +1250,7 @@ export async function uploadXhsImagesSequentially(files: File[]): Promise<Upload
       };
     }
     uploadedCount += 1;
-    await sleep(1000);
+    await humanImageUploadGap();
   }
 
   return {
@@ -1211,12 +1289,8 @@ async function handleUnknownPublishState(): Promise<ActionResult> {
 export function detectXhsPublishState(): XhsPublishState {
   const text = publishPageText();
   if (isLoginWall()) return 'login_wall';
-  if (
-    /发布成功|笔记发布成功|已发布|发布审核中/.test(bodyText()) ||
-    /发布成功|笔记发布成功|已发布|发布审核中/.test(text)
-  ) {
-    return 'success';
-  }
+  if (isNoteManagerListPage()) return 'unknown';
+  if (isPublishSuccessSignal()) return 'success';
   if (/发布失败|提交失败|内容违规|请修改后再发布|账号异常/.test(text)) return 'blocked';
   if (/验证码|安全验证|违规|不可发布|生成失败|上传失败/.test(text)) return 'blocked';
   if (/图片生成中|生成中|上传中|处理中|提交中/.test(text)) return 'image_generating';
@@ -1258,11 +1332,11 @@ export function detectXhsPublishState(): XhsPublishState {
   return 'unknown';
 }
 
-function fail(state: XhsPublishState, message: string): ActionResult {
+function fail(state: XhsPublishState, message: string, errorCode?: ActionResult['errorCode']): ActionResult {
   const diagnostics = collectDiagnostics(state);
   return {
     success: false,
-    errorCode: 'PLATFORM_PAGE_CHANGED',
+    errorCode: errorCode ?? (state === 'blocked' ? errorCodeFromBlockers(detectXhsBlockers()) : 'PLATFORM_PAGE_CHANGED'),
     message: `${message}\n${formatDiagnostics(diagnostics)}`,
     diagnostics,
   };
@@ -1280,6 +1354,19 @@ function ensureXhsPublishPageFrame(): PublishResult | null {
     };
   }
   return null;
+}
+
+/** 笔记管理列表页无表单时导航回发布编辑页 */
+async function navigateFromNoteManagerIfNeeded(): Promise<ActionResult | null> {
+  if (!isNoteManagerListPage()) return null;
+  window.location.href = XHS_URLS.publishUrl;
+  const start = Date.now();
+  while (Date.now() - start < 15000) {
+    await sleep(500);
+    if (!isNoteManagerListPage()) return null;
+    if (hasRealFinalFormFields() || detectXhsPublishState() !== 'unknown') return null;
+  }
+  return fail('unknown', '从笔记管理页导航至发布编辑页超时，请手动打开发布页后重试');
 }
 
 /**
@@ -1306,7 +1393,7 @@ async function waitForUploadTabReady(timeout = 10000): Promise<void> {
 async function clickUploadImageTab(): Promise<ActionResult> {
   await waitForUploadTabReady(10000);
   removePopCover();
-  const res = await clickByText(['上传图文'], {
+  const res = await humanClickByText(['上传图文'], {
     exactText: true,
     tags: 'div.creator-tab,.creator-tab,button,div[role="button"],span',
     timeout: 8000,
@@ -1314,7 +1401,7 @@ async function clickUploadImageTab(): Promise<ActionResult> {
   if (!res.success) {
     // 可能被遮罩挡住，移除遮罩后再试一次。
     removePopCover();
-    const retry = await clickByText(['上传图文'], {
+    const retry = await humanClickByText(['上传图文'], {
       exactText: true,
       tags: 'div.creator-tab,.creator-tab,button,div[role="button"],span',
       timeout: 6000,
@@ -1326,7 +1413,7 @@ async function clickUploadImageTab(): Promise<ActionResult> {
 }
 
 async function clickTextImageEntry(): Promise<ActionResult> {
-  const res = await clickByText(['文字配图'], {
+  const res = await humanClickByText(['文字配图'], {
     exactText: true,
     tags: 'button,div[role="button"],span,.d-button',
     timeout: 12000,
@@ -1348,7 +1435,7 @@ async function handleImageEntryWithUpload(ctx: XhsPublishContext): Promise<Actio
       return fail('image_entry', '图片已上传但未出现标题/正文编辑区');
     }
 
-    await clickByText(['上传图片', '上传图文'], {
+    await humanClickByText(['上传图片', '上传图文'], {
       exactText: false,
       tags: 'button,div[role="button"],span,.d-button',
       timeout: 8000,
@@ -1387,19 +1474,28 @@ async function fillDraftAndGenerate(ctx: XhsPublishContext): Promise<ActionResul
     (await waitForCandidate({ selectors: xhsSelectors.textImageDraftEditor, visible: true }, 12000));
   if (!editor) return fail('text_image_editor', '未找到文字配图编辑器');
 
-  const draftText = buildBodyText(ctx.content, true, false);
-  await fillElement(editor, draftText);
-  await sleep(500);
+  const draftText = buildBodyText(ctx.content, false, false);
+  editor.focus();
+  await sleep(200);
+  await fillElementHuman(editor, draftText);
+  await humanFieldGap();
+  await sleep(200);
 
   if (!verifyEditableContains(editor, draftText)) {
-    return {
-      success: false,
-      errorCode: 'FORM_NOT_READY',
-      message: `文字配图草稿未写入成功，编辑器当前内容为空或不匹配。\n${formatDiagnostics(collectDiagnostics('text_image_editor'))}`,
-    };
+    const actual = getEditableText(editor);
+    const normalizedProbe = draftText.trim().replace(/\s+/g, '').slice(0, 12);
+    const lenOk = draftText.length > 0 && actual.length >= draftText.length * 0.8;
+    const partialOk = normalizedProbe.length > 0 && actual.replace(/\s+/g, '').includes(normalizedProbe);
+    if (!lenOk && !partialOk) {
+      return {
+        success: false,
+        errorCode: 'FORM_NOT_READY',
+        message: `文字配图草稿未写入成功，编辑器当前内容为空或不匹配。\n${formatDiagnostics(collectDiagnostics('text_image_editor'))}`,
+      };
+    }
   }
 
-  const generate = await clickByText(['生成图片'], {
+  const generate = await humanClickByText(['生成图片'], {
     exactText: true,
     tags: 'button,div[role="button"],span,.d-button',
     timeout: 12000,
@@ -1446,7 +1542,7 @@ async function waitPreviewAndNext(): Promise<ActionResult> {
     return { success: true, message: '当前已在最终发布表单' };
   }
 
-  const next = await clickByText(['下一步'], {
+  const next = await humanClickByText(['下一步'], {
     exactText: true,
     tags: 'button,div[role="button"],span,.d-button',
     timeout: 12000,
@@ -1469,7 +1565,7 @@ async function advanceFromImageEditingPage(): Promise<ActionResult> {
 
     const state = detectXhsPublishState();
     if (state === 'image_editing' || state === 'image_preview') {
-      await clickByText(['下一步', '完成编辑', '继续'], {
+      await humanClickByText(['下一步', '完成编辑', '继续'], {
         exactText: false,
         tags: 'button,div[role="button"],span,.d-button',
         timeout: 2000,
@@ -1577,8 +1673,8 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
     if (!titleEl) {
       return fail('final_form', '未找到最终发布标题输入框（当前可能仍在图片编辑页）');
     }
-    await fillElement(titleEl, ctx.content.title);
-    await sleep(500);
+    await fillElementHuman(titleEl, ctx.content.title);
+    await humanFieldGap();
     const titleLengthError = checkXhsLengthErrors();
     if (titleLengthError?.startsWith('标题')) {
       return { success: false, errorCode: 'FORM_NOT_READY', message: titleLengthError };
@@ -1595,8 +1691,8 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
         10000,
       ));
     if (!contentEl) return fail('final_form', '未找到最终正文编辑器');
-    await fillElement(contentEl, body);
-    await sleep(1000);
+    await fillElementHuman(contentEl, body);
+    await humanFieldGap();
     if (!verifyEditableContains(contentEl, body)) {
       return {
         success: false,
@@ -1609,13 +1705,13 @@ async function fillFinalForm(ctx: XhsPublishContext): Promise<ActionResult> {
   // 填写正文后回点标题，增强后续标签输入稳定性
   if (titleEl) {
     simulateClick(titleEl);
-    await sleep(500);
+    await humanFieldGap();
   }
 
   if (contentEl && ctx.content.hashtags?.length) {
     const tagResult = await inputXhsTags(contentEl, ctx.content.hashtags);
     if (!tagResult.success) return tagResult;
-    await sleep(1000);
+    await humanFieldGap();
   }
 
   const lengthError = checkXhsLengthErrors();
@@ -1645,7 +1741,9 @@ async function scrollAndWaitPublishReady(timeout = 60000): Promise<ActionResult>
       return fail(detectXhsPublishState(), '最终表单字段已消失');
     }
     const state = detectXhsPublishState();
-    if (state === 'blocked') return fail(state, '发布表单被平台提示阻塞');
+    if (state === 'blocked') {
+      return fail(state, '发布表单被平台提示阻塞', errorCodeFromBlockers(detectXhsBlockers()));
+    }
     if (state === 'text_image_editor') {
       return fail(state, '仍在文字配图草稿页，尚未生成图片');
     }
@@ -1666,6 +1764,16 @@ async function fillFinalFormAndWaitPublishReady(ctx: XhsPublishContext): Promise
 
 async function finishFillFlow(ctx: XhsPublishContext): Promise<ActionResult> {
   const stateBefore = detectXhsPublishState();
+  if (stateBefore === 'success') {
+    if (isPublishSuccessSignal()) {
+      return {
+        success: true,
+        message: '已在发布成功或笔记管理页，跳过填写',
+        data: getXhsPublishFlowDiagnostics(),
+      };
+    }
+    return fail('unknown', '当前在笔记管理列表页，请重新打开发布页');
+  }
   if (stateBefore === 'text_image_editor') {
     return fail(stateBefore, '填写流程结束时仍在文字配图草稿页，图片未生成');
   }
@@ -1712,6 +1820,11 @@ export async function runXhsFillContentFlow(
     };
   }
 
+  const navError = await navigateFromNoteManagerIfNeeded();
+  if (navError) return navError;
+
+  await loadPublishPacingFromSettings();
+
   const publishMode: XhsPublishMode =
     options.publishMode ?? (options.preferImageUpload ? 'image_upload' : 'text_image');
   const ctx: XhsPublishContext = {
@@ -1723,9 +1836,10 @@ export async function runXhsFillContentFlow(
     name: '小红书发布填写流程',
     ctx,
     detect: detectXhsPublishState,
-    terminalStates: ['publish_button_ready'],
+    terminalStates: ['publish_button_ready', 'success'],
     blockedStates: ['login_wall', 'blocked'],
     maxTransitions: 20,
+    getDelayMs: () => humanStateTransitionDelayMs(),
     steps: {
       video_tab: { state: 'video_tab', description: '切换图文页签', run: clickUploadImageTab },
       image_entry: {
@@ -1765,7 +1879,6 @@ export async function runXhsFillContentFlow(
       },
       submit_confirm: { state: 'submit_confirm', description: '确认提交', run: async () => undefined },
       submitting: { state: 'submitting', description: '提交中', run: async () => undefined },
-      success: { state: 'success', description: '成功', run: async () => undefined },
       publish_button_ready: { state: 'publish_button_ready', description: '就绪', run: async () => undefined },
       login_wall: { state: 'login_wall', description: '登录墙', run: async () => undefined },
       blocked: { state: 'blocked', description: '阻塞', run: async () => undefined },
@@ -1794,6 +1907,8 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
   const frameError = ensureXhsPublishPageFrame();
   if (frameError) return frameError;
 
+  await loadPublishPacingFromSettings();
+
   await scrollXhsPublishContainersToBottom();
   const ready = await scrollAndWaitPublishReady(12000);
   if (!ready.success) {
@@ -1808,7 +1923,7 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
   if (scan.blockers.length) {
     return {
       success: false,
-      errorCode: 'BLOCKED_BY_DIALOG',
+      errorCode: errorCodeFromBlockers(scan.blockers),
       message: `页面存在阻塞项：${scan.blockers.join('、')}`,
       resultUrl: location.href,
     };
@@ -1834,7 +1949,9 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
   }
 
   button.scrollIntoView({ block: 'center', inline: 'center' });
-  await sleep(200);
+  await scrollXhsPublishContainersToBottom();
+  clickEmptyPosition();
+  await humanPreSubmitDwell();
   clickXhsPublishElement(button);
   await tryDismissPublishConfirmDialog(3000);
 
@@ -1866,11 +1983,12 @@ export async function runXhsSubmitPublishFlow(): Promise<PublishResult> {
 
 /** frame 定向点击发布按钮（配合 background all-frames fallback） */
 export async function runXhsFramePublishClickFlow(): Promise<PublishResult> {
+  await loadPublishPacingFromSettings();
   const scan = scanXhsPublishButtons();
   if (scan.blockers.length) {
     return {
       success: false,
-      errorCode: 'BLOCKED_BY_DIALOG',
+      errorCode: errorCodeFromBlockers(scan.blockers),
       message: `页面存在阻塞项：${scan.blockers.join('、')}`,
       resultUrl: location.href,
     };
@@ -1893,7 +2011,9 @@ export async function runXhsFramePublishClickFlow(): Promise<PublishResult> {
     };
   }
   button.scrollIntoView({ block: 'center', inline: 'center' });
-  await sleep(200);
+  await scrollXhsPublishContainersToBottom();
+  clickEmptyPosition();
+  await humanPreSubmitDwell();
   clickXhsPublishElement(button);
   await tryDismissPublishConfirmDialog(3000);
   const submitted = await verifyXhsPublishSuccess(15000);

@@ -85,6 +85,7 @@ export async function clearAllData(): Promise<void> {
 /** 统计今日某类动作次数，用于频率限制 */
 export async function countTodayByType(
   taskType: TaskRecord['taskType'],
+  platform?: TaskRecord['platform'],
 ): Promise<number> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -92,6 +93,24 @@ export async function countTodayByType(
   return db.tasks
     .where('taskType')
     .equals(taskType)
-    .filter((t) => t.startedAt >= ts && t.status === 'success')
+    .filter(
+      (t) =>
+        t.startedAt >= ts &&
+        t.status === 'success' &&
+        (!platform || t.platform === platform),
+    )
     .count();
+}
+
+/** 查询指定平台最近一次成功发布完成时间 */
+export async function getLastSuccessfulPublishTime(
+  platform: TaskRecord['platform'],
+): Promise<number | null> {
+  const rows = await db.tasks
+    .where('taskType')
+    .equals('publish')
+    .filter((t) => t.platform === platform && t.status === 'success' && t.finishedAt != null)
+    .toArray();
+  if (!rows.length) return null;
+  return Math.max(...rows.map((t) => t.finishedAt ?? 0));
 }

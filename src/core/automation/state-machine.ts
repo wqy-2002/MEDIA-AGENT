@@ -19,6 +19,8 @@ export interface StateMachineConfig<TState extends string, TContext> {
   steps: Partial<Record<TState, StateMachineStep<TState, TContext>>>;
   maxTransitions?: number;
   delayMs?: number;
+  /** 每步转移后的延迟；优先于固定 delayMs */
+  getDelayMs?: () => number | Promise<number>;
 }
 
 function withDiagnostics(state: string, message: string, diagnostics?: AutomationDiagnostics): ActionResult {
@@ -36,7 +38,7 @@ export async function runStateMachine<TState extends string, TContext>(
   config: StateMachineConfig<TState, TContext>,
 ): Promise<ActionResult> {
   const maxTransitions = config.maxTransitions ?? 30;
-  const delayMs = config.delayMs ?? 300;
+  const defaultDelayMs = config.delayMs ?? 300;
   const visited: TState[] = [];
 
   for (let i = 0; i < maxTransitions; i++) {
@@ -68,6 +70,9 @@ export async function runStateMachine<TState extends string, TContext>(
         diagnostics: result.diagnostics ?? collectDiagnostics(state),
       };
     }
+    const delayMs = config.getDelayMs
+      ? await config.getDelayMs()
+      : defaultDelayMs;
     await sleep(delayMs);
   }
 

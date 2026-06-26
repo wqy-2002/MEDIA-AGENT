@@ -1,4 +1,5 @@
 import type { AppSettings, ModelConfig, PlatformName } from '@/types';
+import { DEFAULT_PUBLISH_PACING } from '@/core/automation/human-pacing';
 
 const SETTINGS_KEY = 'mediaflow_settings';
 
@@ -21,7 +22,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     maxCommentsPerDay: 20,
     maxEngagementsPerDay: 50,
     maxConsecutiveFailures: 3,
+    maxPublishesPerDay: 5,
+    minMinutesBetweenPublishes: 30,
   },
+  publishPacing: { ...DEFAULT_PUBLISH_PACING },
   platformSwitch: {
     xiaohongshu: true,
     sohu: true,
@@ -54,6 +58,7 @@ function mergeSettings(stored: Partial<AppSettings> | undefined): AppSettings {
     defaultPlatform: normalizePlatform(stored.defaultPlatform),
     automation: { ...DEFAULT_SETTINGS.automation, ...stored.automation },
     rateLimit: { ...DEFAULT_SETTINGS.rateLimit, ...stored.rateLimit },
+    publishPacing: { ...DEFAULT_SETTINGS.publishPacing, ...stored.publishPacing },
     platformSwitch: normalizePlatformSwitch(stored.platformSwitch),
   };
 }

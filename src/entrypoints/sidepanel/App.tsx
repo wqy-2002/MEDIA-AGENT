@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AppSettings } from '@/types';
+import type { AppSettings, ContentSource } from '@/types';
 import { getSettings } from '@/core/storage/settings';
 import { getTask } from '@/core/storage/db';
 import { useTaskStore } from '@/stores/task-store';
@@ -13,6 +13,8 @@ type Tab = 'run' | 'history';
 export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [tab, setTab] = useState<Tab>('run');
+  const [contentSource, setContentSource] = useState<ContentSource>('ai');
+  const [extensionVersion, setExtensionVersion] = useState('');
   const {
     tasks,
     currentTaskId,
@@ -30,6 +32,11 @@ export default function App() {
   useEffect(() => {
     void getSettings().then(setSettings);
     void refreshTasks();
+    try {
+      setExtensionVersion(chrome.runtime.getManifest().version ?? '');
+    } catch {
+      setExtensionVersion('');
+    }
 
     const off = onMessage((message) => {
       if (message.type === 'TASK_STATUS_UPDATE') {
@@ -54,6 +61,7 @@ export default function App() {
   }
 
   const apiKeyMissing = !settings.apiKey;
+  const showApiKeyWarning = apiKeyMissing && contentSource === 'ai';
 
   return (
     <div className="flex h-screen flex-col bg-gray-50">
@@ -74,13 +82,13 @@ export default function App() {
         </button>
       </header>
 
-      {apiKeyMissing && (
+      {showApiKeyWarning && (
         <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           尚未配置模型 API Key，请先到
           <button onClick={openOptions} className="mx-1 underline">
             设置页
           </button>
-          填写后再执行任务。
+          填写后再执行 AI 任务；手动发布无需 API Key。
         </div>
       )}
 
@@ -107,8 +115,47 @@ export default function App() {
       <main className="flex-1 space-y-3 overflow-y-auto p-3">
         {tab === 'run' ? (
           <>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-medium text-gray-800">发布方式</h2>
+                {extensionVersion && (
+                  <span className="text-xs text-gray-400">v{extensionVersion}</span>
+                )}
+              </div>
+              <div className="flex rounded-lg border border-gray-200 bg-white p-1 text-sm shadow-sm">
+                <button
+                  type="button"
+                  className={`flex-1 rounded-md py-2 ${
+                    contentSource === 'ai'
+                      ? 'bg-brand-600 font-medium text-white'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                  onClick={() => setContentSource('ai')}
+                >
+                  AI 生成
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 rounded-md py-2 ${
+                    contentSource === 'manual'
+                      ? 'bg-brand-600 font-medium text-white'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                  onClick={() => setContentSource('manual')}
+                >
+                  手动发布
+                </button>
+              </div>
+              {contentSource === 'manual' && (
+                <p className="text-xs text-gray-500">
+                  填写自备标题/正文/话题，跳过 AI 解析与生成，无需 API Key。
+                </p>
+              )}
+            </div>
             <TaskComposer
               defaultPlatform={settings.defaultPlatform}
+              contentSource={contentSource}
+              apiKeyMissing={apiKeyMissing}
               onCreated={(rec) => {
                 setCurrentTask(rec);
                 void selectTask(rec.id);

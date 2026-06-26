@@ -98,6 +98,9 @@ export interface TaskMaterials {
   videos?: string[];
 }
 
+/** 内容来源：AI 生成或用户自备 */
+export type ContentSource = 'ai' | 'manual';
+
 /** 模型输出的结构化任务计划（参见开发文档第 9 节） */
 export interface TaskPlan {
   taskType: TaskType;
@@ -106,6 +109,8 @@ export interface TaskPlan {
   requirements?: TaskRequirements;
   materials?: TaskMaterials;
   targetUrl?: string;
+  /** 任务内容来源，便于历史记录区分 */
+  contentSource?: ContentSource;
   actions: ActionName[];
 }
 
@@ -275,6 +280,53 @@ export interface MaterialRecord {
   createdAt: number;
 }
 
+/** 文本填入安全等级 */
+export type TypingSafetyLevel = 'fast' | 'balanced' | 'safe' | 'ultra_safe';
+
+/** 文本输入模式 */
+export type TypingMode = 'chunked' | 'char';
+
+/** 小红书发布防风控节奏配置 */
+export interface PublishPacingConfig {
+  enabled: boolean;
+  /** Executor 大步骤间最小/最大停顿（毫秒） */
+  stepGapMinMs: number;
+  stepGapMaxMs: number;
+  /** 状态机步间最小/最大停顿 */
+  stateTransitionMinMs: number;
+  stateTransitionMaxMs: number;
+  /** 点击与字段切换间停顿 */
+  actionDelayMinMs: number;
+  actionDelayMaxMs: number;
+  /** 分块输入块长与块间停顿 */
+  chunkMinChars: number;
+  chunkMaxChars: number;
+  chunkDelayMinMs: number;
+  chunkDelayMaxMs: number;
+  /** 点击发布前审阅停顿 */
+  preSubmitMinMs: number;
+  preSubmitMaxMs: number;
+  /** 逐张图片上传间隔 */
+  imageUploadGapMinMs: number;
+  imageUploadGapMaxMs: number;
+  /** 文本填入安全等级预设 */
+  typingSafetyLevel: TypingSafetyLevel;
+  /** 文本输入模式：分块或逐字 */
+  typingMode: TypingMode;
+  /** 逐字输入每字延时 */
+  charDelayMinMs: number;
+  charDelayMaxMs: number;
+  /** 标题/正文/标签字段切换间停顿 */
+  fieldGapMinMs: number;
+  fieldGapMaxMs: number;
+  /** 思考停顿：每隔多少字触发一次（最小/最大间隔字数） */
+  thinkingPauseEveryMinChars: number;
+  thinkingPauseEveryMaxChars: number;
+  /** 思考停顿时长 */
+  thinkingPauseMinMs: number;
+  thinkingPauseMaxMs: number;
+}
+
 /** 用户设置（落 chrome.storage.local） */
 export interface AppSettings {
   apiKey: string;
@@ -297,6 +349,12 @@ export interface AppSettings {
     maxEngagementsPerDay: number;
     /** 连续失败上限，超过则暂停 */
     maxConsecutiveFailures: number;
+    /** 单日发布上限 */
+    maxPublishesPerDay: number;
+    /** 两次成功发布最短间隔（分钟） */
+    minMinutesBetweenPublishes: number;
   };
+  /** 小红书发布节奏（防风控） */
+  publishPacing: PublishPacingConfig;
   platformSwitch: Record<PlatformName, boolean>;
 }

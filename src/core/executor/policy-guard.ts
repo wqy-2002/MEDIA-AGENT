@@ -1,5 +1,5 @@
 import type { AppSettings, TaskPlan } from '@/types';
-import { countTodayByType } from '@/core/storage/db';
+import { countTodayByType, getLastSuccessfulPublishTime } from '@/core/storage/db';
 
 export interface PolicyResult {
   allowed: boolean;
@@ -61,6 +61,29 @@ export async function checkPolicy(
         allowed: false,
         reason: `已达单日互动上限（${settings.rateLimit.maxEngagementsPerDay} 次）`,
       };
+    }
+  }
+
+  if (plan.taskType === 'publish') {
+    const publishCount = await countTodayByType('publish', plan.platform);
+    if (publishCount >= settings.rateLimit.maxPublishesPerDay) {
+      return {
+        allowed: false,
+        reason: `已达单日发布上限（${settings.rateLimit.maxPublishesPerDay} 次）`,
+      };
+    }
+
+    const lastFinishedAt = await getLastSuccessfulPublishTime(plan.platform);
+    const minGapMs = settings.rateLimit.minMinutesBetweenPublishes * 60 * 1000;
+    if (lastFinishedAt != null && minGapMs > 0) {
+      const elapsed = Date.now() - lastFinishedAt;
+      if (elapsed < minGapMs) {
+        const remainMin = Math.ceil((minGapMs - elapsed) / 60000);
+        return {
+          allowed: false,
+          reason: `距上次成功发布未满 ${settings.rateLimit.minMinutesBetweenPublishes} 分钟，请约 ${remainMin} 分钟后再试`,
+        };
+      }
     }
   }
 

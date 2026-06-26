@@ -1,15 +1,20 @@
 import type {
   ActionResult,
+  GeneratedContent,
   ModelConfig,
   PlatformName,
   TaskRecord,
   TaskStatus,
   LogEntry,
+  ContentSource,
 } from '@/types';
 import type { ContentCommand } from '@/adapters/types';
 
 export interface CreateTaskPayload {
   userInput: string;
+  /** 默认 ai；manual 时使用 manualContent，跳过 LLM */
+  contentSource?: ContentSource;
+  manualContent?: GeneratedContent;
   platform?: PlatformName;
   targetUrl?: string;
   /** 已上传到 IndexedDB 的素材 id 列表 */
